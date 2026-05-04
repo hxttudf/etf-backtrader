@@ -18,6 +18,7 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).parent))
 
 from etf_data import DEFAULT_CONFIG, calc_indicators, load_config, load_prices, load_prices_extended
+from etf_backtrader import run_backtest_bt, position_dist_bt
 
 st.set_page_config(page_title="ETF双动量轮动", layout="wide")
 st.title("ETF 双动量轮动")
@@ -629,6 +630,7 @@ roc_days = st.sidebar.slider("ROC 动量天数", 5, 120, int(_qp("roc", "25")), 
 compare_min_hold = st.sidebar.checkbox("最小持有10天对比", value=_qp("cmp", "0") == "1",
     help="开启后同时显示 原始策略 vs 最小持有10天 两条曲线")
 run_btn = st.sidebar.button("🚀 开始回测", type="primary", use_container_width=True)
+use_backtrader = st.sidebar.checkbox("使用 Backtrader 引擎", value=True, help="勾选使用 backtrader 专业回测引擎，取消使用手写回测")
 
 # ── Persist to URL query params (survives F5 refresh) ──
 st.query_params.update({
@@ -668,7 +670,8 @@ if run_btn:
         all_metrics = {}
 
         for m in modes_to_run:
-            nav, bnav, ret, bret, trades, trade_dates, trade_details = run_backtest(
+            bt_fn = run_backtest_bt if use_backtrader else run_backtest
+            nav, bnav, ret, bret, trades, trade_dates, trade_details = bt_fn(
                 prices_full, m, start_str, end_str, ma_days, roc_days)
             metrics_dict = calc_metrics(nav, ret)
             bench_metrics = calc_metrics(bnav, bret)
@@ -679,7 +682,8 @@ if run_btn:
         cmp_data = {}
         if compare_min_hold:
             for m in modes_to_run:
-                nav2, bnav2, ret2, bret2, trades2, td2, tdets2 = run_backtest(
+                bt_fn = run_backtest_bt if use_backtrader else run_backtest
+                nav2, bnav2, ret2, bret2, trades2, td2, tdets2 = bt_fn(
                     prices_full, m, start_str, end_str, ma_days, roc_days, min_hold=10)
                 cmp_data[m] = (nav2, bnav2, ret2, bret2, trades2, td2, tdets2)
 
@@ -736,7 +740,8 @@ if run_btn:
                        "最大亏损日期", "水下天数", "最长亏损持续", "最长亏损区间",
                        "持有天数", "卡尔玛比率", "交易次数", "胜率"]
         render_metrics(mm, trades, wr, metric_keys)
-        pos_days, pos_buys, pos_contrib, pos_cum, pos_wr = position_dist(prices_full, start_str, end_str, m, ma_days, roc_days)
+        pos_fn = position_dist_bt if use_backtrader else position_dist
+        pos_days, pos_buys, pos_contrib, pos_cum, pos_wr = pos_fn(prices_full, start_str, end_str, m, ma_days, roc_days)
         total = sum(pos_days.values())
         pos_rows = []
         for k in sorted(pos_days.keys(), key=lambda x: -pos_days[x]):
@@ -767,7 +772,8 @@ if run_btn:
             st.markdown(f"**{m.upper()} 调仓**")
             render_metrics(c_mm, c_trades, c_wr, metric_keys)
             # Position distribution for comparison
-            c_days, c_buys, c_contrib, c_cum, c_wr = position_dist(prices_full, start_str, end_str, m, ma_days, roc_days, min_hold=10)
+            pos_fn = position_dist_bt if use_backtrader else position_dist
+            c_days, c_buys, c_contrib, c_cum, c_wr = pos_fn(prices_full, start_str, end_str, m, ma_days, roc_days, min_hold=10)
             c_total = sum(c_days.values())
             c_rows = []
             for k in sorted(c_days.keys(), key=lambda x: -c_days[x]):

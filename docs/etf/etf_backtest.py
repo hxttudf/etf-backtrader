@@ -23,6 +23,7 @@ plt.rcParams["font.sans-serif"] = ["Arial Unicode MS", "Microsoft YaHei", "SimHe
 plt.rcParams["axes.unicode_minus"] = False
 
 from etf_data import DEFAULT_CONFIG, calc_indicators, load_config, load_prices, load_prices_extended
+from etf_backtrader import run_backtest_bt, position_dist_bt
 
 COMMISSION = 0.0001  # 万1 per side, 免五
 STAMP_DUTY = 0.0005  # 印花税 0.05%, 卖出时收取
@@ -423,6 +424,7 @@ def main() -> None:
     parser.add_argument("--config", default=None, help="配置文件路径")
     parser.add_argument("--source", default="tencent", choices=["tencent", "akshare"], help="数据源 (默认tencent)")
     parser.add_argument("--html", action="store_true", help="输出交互式HTML图表（可hover查看调仓ETF）")
+    parser.add_argument("--backtrader", action="store_true", default=False, help="使用 backtrader 引擎回测")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -460,8 +462,10 @@ def main() -> None:
 
         all_metrics = {}
         for mode in modes:
-            nav, bnav, ret, bret, trades, trade_dates, trade_details = run_backtest(
-                prices_full, mode, args.start, args.end, args.ma, args.roc)
+            nav, bnav, ret, bret, trades, trade_dates, trade_details = (
+                run_backtest_bt(prices_full, mode, args.start, args.end, args.ma, args.roc)
+                if args.backtrader else
+                run_backtest(prices_full, mode, args.start, args.end, args.ma, args.roc))
             m = metrics(nav, ret)
             bm = metrics(bnav, bret)
             all_metrics[mode] = (m, bm, trades, ret, nav, bnav, trade_dates, trade_details)
@@ -482,7 +486,10 @@ def main() -> None:
             print(f"{'交易次数':<14} {trades:>10}")
             print(f"{'胜率':<14} {wr:>9.1%}")
 
-            pos_days, pos_buys = position_dist(prices_full, args.start, args.end, mode, args.ma, args.roc)
+            pd_result = (position_dist_bt(prices_full, args.start, args.end, mode, args.ma, args.roc)
+                         if args.backtrader else
+                         position_dist(prices_full, args.start, args.end, mode, args.ma, args.roc))
+            pos_days, pos_buys = pd_result[:2]
             total = sum(pos_days.values())
             print("\n  持仓分布 (天数/买入次数):")
             for k in sorted(pos_days.keys(), key=lambda x: -pos_days[x]):
