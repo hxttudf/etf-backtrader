@@ -55,12 +55,12 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=60)
 def cached_prices(etfs: dict, group_name: str, source: str = "tencent") -> pd.DataFrame:
     return load_prices(etfs, group_name, source=source)
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=60)
 def cached_open_prices(etfs: dict, group_name: str, source: str = "akshare") -> pd.DataFrame | None:
     return load_open_prices(etfs, group_name, source=source)
 
@@ -1018,6 +1018,17 @@ if run_btn:
     if last_data_date < today - pd.Timedelta(days=1):
         st.warning(f"⚠️ 数据最新日期为 {last_data_date.strftime('%Y-%m-%d')}，可能不是最新。点左侧「刷新数据缓存」获取最新数据。")
 
+    # Check for recent data gaps per ETF (e.g. EastMoney partial failure)
+    recent = prices_full.iloc[-10:]
+    gap_etfs = []
+    for name in prices_full.columns:
+        if recent[name].isna().all():
+            last_valid = prices_full[name].dropna().index[-1]
+            gap_etfs.append((name, last_valid))
+    if gap_etfs:
+        gap_list = "、".join(f"{n}(最近: {d.strftime('%m-%d')})" for n, d in gap_etfs)
+        st.warning(f"⚠️ 以下ETF近期无数据，已用前值填充(ffill)：{gap_list}。建议切换数据源或刷新缓存。")
+
     # Build price view with open prices and daily change
     price_data = {}
     for name, code in etfs.items():
@@ -1480,6 +1491,17 @@ if sig_btn:
         if stale_etfs:
             stale_list = "、".join(f"{name}(最近: {d.strftime('%m-%d')})" for name, d in stale_etfs.items())
             st.warning(f"⚠️ 以下ETF在查询日期无数据，使用了前值填充(ffill)：{stale_list}。信号可能基于非真实数据，请谨慎参考。")
+
+        # Check for systematic data gaps (e.g. source partially failing)
+        recent = prices.iloc[-10:]
+        gap_etfs = []
+        for name in prices.columns:
+            if recent[name].isna().all():
+                last_valid = prices[name].dropna().index[-1]
+                gap_etfs.append((name, last_valid))
+        if gap_etfs:
+            gap_list = "、".join(f"{n}(最近: {d.strftime('%m-%d')})" for n, d in gap_etfs)
+            st.warning(f"⚠️ 以下ETF近期完全无数据（数据源可能部分失效）：{gap_list}。建议切换数据源。")
         if missing_etfs:
             missing_list = "、".join(missing_etfs)
             st.error(f"❌ 以下ETF完全没有可用数据：{missing_list}")

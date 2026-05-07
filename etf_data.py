@@ -203,6 +203,25 @@ def load_prices(etfs: dict, group_name: str = "default", source: str = "tencent"
         if cache_latest < today - pd.Timedelta(days=5):
             print(f"[{source}] 缓存过期 ({cache_latest.strftime('%Y-%m-%d')})，重新拉取...")
             is_stale = True
+    # Intraday / post-close refresh for today's data
+    if not is_stale and len(cached) > 0:
+        today = pd.Timestamp.now().normalize()
+        if today in cached.index:
+            now = pd.Timestamp.now()
+            is_trading = now.dayofweek < 5 and 9 <= now.hour < 15
+            tracked = [c for c in etfs.values() if c in cached.columns]
+            today_has_nan = bool(tracked) and cached.loc[today, tracked].isna().any() if tracked else False
+
+            if is_trading:
+                # During trading hours: re-fetch if cache file hasn't been updated in 5+ min
+                cache_mtime = pd.Timestamp(cache_file.stat().st_mtime, unit='s')
+                if (now - cache_mtime).total_seconds() > 300:
+                    print(f"[{source}] 交易时段缓存已过{int((now - cache_mtime).total_seconds() / 60)}分钟，重新拉取...")
+                    is_stale = True
+            elif now.hour >= 15 and today_has_nan:
+                # After close: if today was fetched intraday with partial data → re-fetch
+                print(f"[{source}] 今日盘中缓存不完整（{cached.loc[today, tracked].isna().sum()}/{len(tracked)}个ETF无数据），收盘后重新拉取...")
+                is_stale = True
     new_codes = [c for c in set(etfs.values()) if c not in cached.columns]
 
     if is_stale or new_codes:
