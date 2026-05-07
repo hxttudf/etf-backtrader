@@ -65,14 +65,28 @@ def cached_open_prices(etfs: dict, group_name: str, source: str = "akshare") -> 
     return load_open_prices(etfs, group_name, source=source)
 
 
+def _safe_loc(df, col, dt, fallback_prices, i):
+    """Get df[col].loc[dt] safely, falling back to prev close if dt not in index."""
+    if col is not None and col in df.columns and dt in df.index:
+        v = df[col].loc[dt]
+        if not pd.isna(v):
+            return v
+    # Fallback: use previous close (same as np.roll logic)
+    if i > 0:
+        return fallback_prices[col].iloc[i - 1]
+    return np.nan
+
+
 def run_backtest(prices, mode, start_date, end_date, ma_days, roc_days, min_hold=0,
-                 open_prices=None, midday_prices=None, afternoon_open_prices=None):
+                 open_prices=None, midday_prices=None, afternoon_open_prices=None,
+                 delay=0):
     """Inline backtest so the app stays self-contained.
 
     信号在 T 日收盘判定，T+1 执行。
-    - 无特殊价格: close-to-close
-    - open_prices: T+1 开盘执行 (close→open 过夜 + open→close 日内)
-    - midday + afternoon_open: 中午执行 (close→midday 上午 + afternoon_open→close 下午)
+    - 无特殊价格: close-to-close (信号 T日close → 执行 T日close, 同日)
+    - open_prices: T+1 开盘执行 (信号 T日close → 执行 T+1日open)
+    - midday + afternoon_open: 中午执行 (信号 T-1日close → 执行 T日中午)
+    - delay: 信号延迟天数 (0=同日/次日, 1=额外延迟1天, 即当前旧行为)
     """
     start_date = pd.Timestamp(start_date)
     end_date = pd.Timestamp(end_date)
@@ -88,16 +102,54 @@ def run_backtest(prices, mode, start_date, end_date, ma_days, roc_days, min_hold
     trade_dates = []
     trade_details = []
     is_friday = prices.index.dayofweek == 4
-    signal = None
     last_trade_idx = -999
     _use_open = open_prices is not None
     _use_midday = midday_prices is not None and afternoon_open_prices is not None
+    _is_close = not _use_open and not _use_midday
+    _first_bar_in_range = True  # skip trade on first bar for clean start
+
+    # signal_hist[j] = signal computed from close[j] (None before warmup)
+    signal_hist: list = [None] * len(prices)
+    daily_signals: list = []  # built per bar for UI signal table
+    started_in_range = False
 
     for i in range(ma_days, len(prices)):
         dt = prices.index[i]
 
-        # Execute pending signal (computed from close[i-1])
-        if signal != holding and i - last_trade_idx >= min_hold:
+        # Reset position on first bar in backtest range → clean start
+        if not started_in_range and start_date <= dt <= end_date:
+            holding = None
+            started_in_range = True
+            _first_bar_in_range = True
+
+        # ── Step 1: compute signal from close[i] ──
+        should_check = True if mode == "daily" else is_friday[i]
+        if should_check:
+            above = {}
+            for name in etf_names:
+                px = prices[name].iloc[i]
+                ma = ma60[name].iloc[i]
+                roc = roc20[name].iloc[i]
+                if not pd.isna(ma) and px > ma and not pd.isna(roc):
+                    above[name] = roc
+            signal_hist[i] = max(above, key=above.get) if above else None
+        else:
+            signal_hist[i] = signal_hist[i - 1] if i > ma_days else None
+
+        # ── Step 2: determine effective signal with delay ──
+        # MOC(收盘): 信号 close[i-delay] → 执行 close[i] (同日, delay=0时)
+        # MOO(开盘): 信号 close[i-1-delay] → 执行 open[i] (T-1信号, T开盘执行)
+        # 两者信号源相同(都是close[i-delay]), 差在执行日相差1天
+        if _is_close:
+            src = i - delay                          # MOC: 同日信号+执行
+        else:
+            src = i - 1 - delay                      # MOO/Midday: 前日信号+当日执行
+        effective_signal = signal_hist[src] if src >= ma_days else None
+
+        # ── Step 3: execute ──
+        skip_first = _first_bar_in_range and not _is_close  # MOO/Midday: stale signal on first bar
+        _first_bar_in_range = False
+        if not skip_first and effective_signal != holding and i - last_trade_idx >= min_hold:
             if _use_midday and i > 0:
                 # Midday execution: morning(old) + afternoon(new)
                 mid_dt = midday_prices.index[midday_prices.index <= dt]
@@ -105,17 +157,17 @@ def run_backtest(prices, mode, start_date, end_date, ma_days, roc_days, min_hold
                 if len(mid_dt) > 0 and len(aft_dt) > 0:
                     mk = mid_dt[-1]; ak = aft_dt[-1]
                     mid_ok = holding is None or (holding in midday_prices.columns and mk in midday_prices.index)
-                    aft_ok = signal is None or (signal in afternoon_open_prices.columns and ak in afternoon_open_prices.index)
-                    if (holding is None or mid_ok) and (signal is None or aft_ok):
+                    aft_ok = effective_signal is None or (effective_signal in afternoon_open_prices.columns and ak in afternoon_open_prices.index)
+                    if (holding is None or mid_ok) and (effective_signal is None or aft_ok):
                         if holding is not None:
                             prev_c = prices[holding].iloc[i - 1]
                             mid_px = midday_prices[holding].loc[mk]
                             if not pd.isna(prev_c) and not pd.isna(mid_px) and prev_c > 0:
                                 strat_ret.iloc[i] = mid_px / prev_c - 1
                             strat_ret.iloc[i] -= COMMISSION + STAMP_DUTY
-                        if signal is not None:
+                        if effective_signal is not None:
                             strat_ret.iloc[i] -= COMMISSION
-                        new_h = signal
+                        new_h = effective_signal
                         if new_h is not None:
                             aft_o = afternoon_open_prices[new_h].loc[ak]
                             day_c = prices[new_h].iloc[i]
@@ -126,59 +178,56 @@ def run_backtest(prices, mode, start_date, end_date, ma_days, roc_days, min_hold
                         if holding is not None:
                             r = returns[holding].iloc[i]
                             strat_ret.iloc[i] = (r if not pd.isna(r) else 0.0) - COMMISSION - STAMP_DUTY
-                        if signal is not None:
+                        if effective_signal is not None:
                             strat_ret.iloc[i] -= COMMISSION
                 else:
                     if holding is not None:
                         r = returns[holding].iloc[i]
                         strat_ret.iloc[i] = (r if not pd.isna(r) else 0.0) - COMMISSION - STAMP_DUTY
-                    if signal is not None:
+                    if effective_signal is not None:
                         strat_ret.iloc[i] -= COMMISSION
             elif _use_open and i > 0:
                 # T+1 open execution
+                # Use .loc[dt] (not .iloc[i]) because open_prices may have different row count
                 if holding is not None:
                     prev_c = prices[holding].iloc[i - 1]
-                    today_open_old = open_prices[holding].iloc[i]
+                    today_open_old = _safe_loc(open_prices, holding, dt, prices, i)
                     if not pd.isna(prev_c) and not pd.isna(today_open_old) and prev_c > 0:
                         strat_ret.iloc[i] = today_open_old / prev_c - 1
                     strat_ret.iloc[i] -= COMMISSION + STAMP_DUTY
-                if signal is not None:
+                if effective_signal is not None:
                     strat_ret.iloc[i] -= COMMISSION
-                new_h = signal
+                new_h = effective_signal
                 if new_h is not None:
-                    o = open_prices[new_h].iloc[i]
+                    o = _safe_loc(open_prices, new_h, dt, prices, i)
                     c = prices[new_h].iloc[i]
                     if not pd.isna(o) and not pd.isna(c) and o > 0:
                         strat_ret.iloc[i] = (1 + strat_ret.iloc[i]) * (1 + c / o - 1) - 1
             else:
-                # Close-to-close
+                # Close-to-close (signal T日close → execute T日close, same day)
                 if holding is not None:
                     r = returns[holding].iloc[i]
                     strat_ret.iloc[i] = (r if not pd.isna(r) else 0.0) - COMMISSION - STAMP_DUTY
-                if signal is not None:
+                if effective_signal is not None:
                     strat_ret.iloc[i] -= COMMISSION
 
             trades += 1
             trade_dates.append(dt)
-            trade_details.append((dt, holding, signal))
+            trade_details.append((dt, holding, effective_signal))
             last_trade_idx = i
-            holding = signal
+            holding = effective_signal
 
         elif holding is not None:
             r = returns[holding].iloc[i]
             strat_ret.iloc[i] = r if not pd.isna(r) else 0.0
 
-        # Compute signal at close → for next bar
-        should_check = True if mode == "daily" else is_friday[i]
-        if should_check:
-            above = {}
-            for name in etf_names:
-                px = prices[name].iloc[i]
-                ma = ma60[name].iloc[i]
-                roc = roc20[name].iloc[i]
-                if not pd.isna(ma) and px > ma and not pd.isna(roc):
-                    above[name] = roc
-            signal = max(above, key=above.get) if above else None
+        # Build daily signal record (after execution, holding reflects current position)
+        sig_record = {'_dt': dt}
+        for name in etf_names:
+            roc_v = roc20[name].iloc[i]
+            sig_record[name] = float(roc_v) if not pd.isna(roc_v) else None
+        sig_record['holding'] = holding  # post-execution holding
+        daily_signals.append(sig_record)
 
     trim = (prices.index >= start_date) & (prices.index <= end_date)
     ret = strat_ret[trim]
@@ -188,20 +237,22 @@ def run_backtest(prices, mode, start_date, end_date, ma_days, roc_days, min_hold
     filtered_details = [(dt, h, nh) for dt, h, nh in trade_details
                         if start_date <= dt <= end_date]
     filtered_dates = [t[0] for t in filtered_details]
-    return nav, bench_nav, ret, bench_ret, len(filtered_details), filtered_dates, filtered_details
+    filtered_signals = [s for s in daily_signals
+                        if start_date <= s['_dt'] <= end_date]
+    return nav, bench_nav, ret, bench_ret, len(filtered_details), filtered_dates, filtered_details, filtered_signals
 
 
 def calc_metrics(nav, ret):
     r = ret.dropna()
-    if len(r) < 5:
+    if len(r) < 1:
         return {}
     total = nav.iloc[-1] - 1
-    ann = (1 + total) ** (252 / len(r)) - 1
-    vol = r.std() * (252 ** 0.5)
-    sharpe = (ann - 0.03) / vol if vol > 0 else 0
+    ann = (1 + total) ** (252 / max(len(r), 1)) - 1 if total > -1 else total
+    vol = r.std() * (252 ** 0.5) if len(r) >= 2 else 0.0
+    sharpe = (ann - 0.03) / vol if vol > 0 else (0.0 if ann <= 0.03 else float('inf'))
     dd_series = nav / nav.cummax() - 1
     dd = dd_series.min()
-    calmar = ann / abs(dd) if dd != 0 else 0
+    calmar = ann / abs(dd) if dd != 0 and ann > 0 else 0
     max_loss = (nav - 1).min()
     max_loss_dt = nav.idxmin()
     underwater_days = int((nav < 1).sum())
@@ -276,7 +327,8 @@ def _nav_one_backtest(prices, daily_ret, ma60, roc20, etf_names, start_date, end
 def position_dist(prices, start_date, end_date, mode, ma_days, roc_days, min_hold=0):
     """返回 (持有天数dict, 买入次数dict, 收益占比dict, 持有期累计收益dict, 上涨天数占比dict)
     收益占比 = 各ETF持有期间的对数收益 / 总对数收益，加总=100%，正=赚钱负=亏钱
-    持有期累计收益 = 持有该ETF期间的累计收益率"""
+    持有期累计收益 = 持有该ETF期间的累计收益率
+    [v2: buys only counted in_range]"""
     etf_names = list(prices.columns)
     daily_ret = prices.pct_change(fill_method=None)
     ma60, roc20, _ = calc_indicators(prices, ma_days, roc_days)
@@ -292,10 +344,14 @@ def position_dist(prices, start_date, end_date, mode, ma_days, roc_days, min_hol
     log_ret["CASH"] = 0.0
     holding = None
     last_trade_idx = -999
+    first_in_range = True
     for i in range(ma_days, len(prices)):
         dt = prices.index[i]
         in_range = dt >= pd.Timestamp(start_date) and dt <= pd.Timestamp(end_date)
         if in_range:
+            if first_in_range and holding is not None:
+                buys[holding] += 1  # initial position counts as a buy
+            first_in_range = False
             h = holding or "CASH"
             days[h] += 1
             if h != "CASH":
@@ -317,7 +373,8 @@ def position_dist(prices, start_date, end_date, mode, ma_days, roc_days, min_hol
                     above[name] = roc
             new_holding = max(above, key=above.get) if above else None
             if new_holding is not None and new_holding != holding:
-                buys[new_holding] += 1
+                if in_range:
+                    buys[new_holding] += 1
                 last_trade_idx = i
                 # 佣金从当天持仓的 log return 扣除
                 if in_range and holding is not None:
@@ -383,7 +440,8 @@ def trade_win_rate(ret, trade_details, prices):
 
 
 def grid_search(prices, modes, start, end, ma_values, roc_values, progress_bar,
-                open_prices=None, midday_prices=None, afternoon_open_prices=None):
+                open_prices=None, midday_prices=None, afternoon_open_prices=None,
+                delay=0):
     """网格搜索最优MA/ROC，返回所有结果DataFrame"""
     import itertools
 
@@ -392,11 +450,12 @@ def grid_search(prices, modes, start, end, ma_values, roc_values, progress_bar,
     done = 0
     for ma, roc in itertools.product(ma_values, roc_values):
         for mode in modes:
-            nav, bnav, ret, bret, trades, trade_dates, trade_details = run_backtest(
+            nav, bnav, ret, bret, trades, trade_dates, trade_details, _ = run_backtest(
                 prices, mode, start, end, ma, roc,
                 open_prices=open_prices,
                 midday_prices=midday_prices,
-                afternoon_open_prices=afternoon_open_prices)
+                afternoon_open_prices=afternoon_open_prices,
+                delay=delay)
             m = calc_metrics(nav, ret)
             wr = trade_win_rate(ret, trade_details, prices)
             rows.append({
@@ -660,11 +719,10 @@ _qp = lambda k, d: qp[k] if k in qp else d
 
 # Group selector + config button
 col1, col2 = st.sidebar.columns([3, 1])
-with col1:
-    group_names = list(cfg["groups"].keys())
-    sel_group = st.selectbox("组合", group_names,
-                             index=group_names.index(_qp("g", group_names[0])) if _qp("g", group_names[0]) in group_names else 0,
-                             key="sel_group")
+group_names = list(cfg["groups"].keys())
+sel_group = col1.selectbox("组合", group_names,
+                         index=group_names.index(_qp("g", group_names[0])) if _qp("g", group_names[0]) in group_names else 0,
+                         key="group_sel_v4")
 with col2:
     st.write(" ")
     if st.button("⚙️", help="管理组合", width='stretch'):
@@ -698,6 +756,7 @@ group_names = list(cfg["groups"].keys())
 if sel_group not in group_names:
     sel_group = group_names[0]
 
+# ── Date pickers ──
 start_date = st.sidebar.date_input("开始日期",
     pd.Timestamp(_qp("start", "2025-04-30")),
     min_value=pd.Timestamp("2010-01-01"),
@@ -718,6 +777,8 @@ source_hint = {"tencent": "⚠️ 仅约800交易日（~3年）", "akshare": "�
 st.sidebar.caption(source_hint[source])
 ma_days = st.sidebar.slider("MA 均线天数", 10, 200, int(_qp("ma", "60")), step=5, key="sb_ma")
 roc_days = st.sidebar.slider("ROC 动量天数", 5, 120, int(_qp("roc", "20")), step=5, key="sb_roc")
+delay = st.sidebar.slider("信号延迟 (天)", 0, 5, int(_qp("delay", "0")), step=1, key="sb_delay",
+    help="0=当日收盘出信号即执行(收盘)或T+1开盘执行(开盘)。1=额外延迟1天(旧行为)")
 compare_min_hold = st.sidebar.checkbox("最小持有10天对比", value=_qp("cmp", "0") == "1",
     help="开启后同时显示 原始策略 vs 最小持有10天 两条曲线")
 compare_all = st.sidebar.checkbox("对比所有组合", value=False,
@@ -727,21 +788,21 @@ exec_timing = st.sidebar.selectbox("执行时机",
     ["T+1开盘", "T+1收盘", "中午→下午"],
     index=0,
     format_func=lambda x: {
-        "T+1开盘": "T+1 开盘价执行（推荐）",
-        "T+1收盘": "T+1 收盘价近似",
+        "T+1开盘": "T+1 开盘执行（T日信号+T+1日开盘买卖）",
+        "T+1收盘": "当日收盘执行（T日信号+T日收盘买卖）",
         "中午→下午": "中午信号→下午调仓（需60分钟K线）",
     }[x],
     key="sb_exec",
-    help="中午→下午: T-1收盘信号 → T日11:30卖出 → T日13:00买入。仅 Sina 数据源支持。")
+    help="当日收盘=T日15:00收盘出信号+立即以收盘价换仓 | T+1开盘=T日收盘出信号+T+1日开盘价换仓 | 中午=盘中信号+下午开盘执行")
 _bt_disabled = (exec_timing == "中午→下午")
 if _bt_disabled:
-    st.sidebar.info("中午执行模式下使用手写引擎（已完整支持日内调仓），Backtrader 不可用。")
+    st.sidebar.info("中午执行模式下 Backtrader 不可用。MOC/MOO 均已适配 Backtrader coc/coo 模式。")
 use_backtrader = st.sidebar.checkbox("使用 Backtrader 引擎",
     value=False if _bt_disabled else True,
     disabled=_bt_disabled,
     help="勾选使用 backtrader 专业回测引擎，取消使用手写回测")
 strategy = st.sidebar.selectbox("策略", list(STRATEGIES.keys()),
-    format_func=lambda x: {"momentum": "动量轮动", "rsi": "RSI均值回归", "bb": "布林带均值回归", "macd": "MACD趋势跟随", "mom_rsi": "动量+RSI过滤", "mom_bb": "动量+布林带过滤", "vol_weighted": "波动率加权", "dual_lookback": "双周期动量", "trend_strength": "趋势确认动量", "stop_loss": "动量+移动止损"}[x],
+    format_func=lambda x: {"momentum": "动量轮动", "rsi": "RSI均值回归", "bb": "布林带均值回归", "macd": "MACD趋势跟随", "mom_rsi": "动量+RSI过滤", "mom_bb": "动量+布林带过滤", "vol_weighted": "波动率加权", "dual_lookback": "双周期动量", "trend_strength": "趋势确认动量", "stop_loss": "动量+移动止损", "moc": "MOC(收盘执行)", "moo": "MOO(开盘执行)"}[x],
     key="sb_strategy",
     disabled=not use_backtrader,
     help="仅 Backtrader 引擎支持多策略")
@@ -751,6 +812,7 @@ st.query_params.update({
     "g": sel_group, "start": str(start_date), "end": str(end_date),
     "mode": mode, "src": source, "ma": str(ma_days), "roc": str(roc_days),
     "cmp": "1" if compare_min_hold else "0", "stg": strategy,
+    "delay": str(delay),
 })
 
 st.sidebar.divider()
@@ -796,8 +858,8 @@ with st.sidebar.expander("⏰ 实操指南"):
 # ── Main area ────────────────────────────────────────────
 if run_btn:
     etfs = cfg["groups"][sel_group]
-    start_str = start_date.strftime("%Y-%m-%d")
-    end_str = end_date.strftime("%Y-%m-%d")
+    start_str = str(start_date)
+    end_str = str(end_date)
     lookback = (pd.Timestamp(start_str) - pd.Timedelta(days=200)).strftime("%Y-%m-%d")
 
     with st.spinner("加载数据 & 运行回测..."):
@@ -845,16 +907,18 @@ if run_btn:
 
         for m in modes_to_run:
             if use_backtrader:
+                bt_mode = 'moc' if _exec_open is None else 'moo'
                 nav, bnav, ret, bret, trades, trade_dates, trade_details, daily_signals = \
                     run_backtest_bt(prices_full, m, actual_start_str, end_str, ma_days, roc_days,
-                                    strategy=strategy, open_prices=_exec_open)
+                                    strategy=bt_mode, open_prices=_exec_open,
+                                    exec_mode=bt_mode)
             else:
-                nav, bnav, ret, bret, trades, trade_dates, trade_details = \
+                nav, bnav, ret, bret, trades, trade_dates, trade_details, daily_signals = \
                     run_backtest(prices_full, m, actual_start_str, end_str, ma_days, roc_days,
                                  open_prices=_exec_open,
                                  midday_prices=_midday_prices,
-                                 afternoon_open_prices=_afternoon_open_prices)
-                daily_signals = []
+                                 afternoon_open_prices=_afternoon_open_prices,
+                                 delay=delay)
             metrics_dict = calc_metrics(nav, ret)
             bench_metrics = calc_metrics(bnav, bret)
             all_metrics[m] = (metrics_dict, bench_metrics, trades, ret, nav, bnav)
@@ -868,13 +932,15 @@ if run_btn:
                 if use_backtrader:
                     nav2, bnav2, ret2, bret2, trades2, td2, tdets2, _ = \
                         run_backtest_bt(prices_full, m, actual_start_str, end_str, ma_days, roc_days,
-                                        min_hold=10, strategy=strategy, open_prices=_exec_open)
+                                        min_hold=10, strategy=bt_mode, open_prices=_exec_open,
+                                        exec_mode=bt_mode)
                 else:
-                    nav2, bnav2, ret2, bret2, trades2, td2, tdets2 = \
+                    nav2, bnav2, ret2, bret2, trades2, td2, tdets2, _ = \
                         run_backtest(prices_full, m, actual_start_str, end_str, ma_days, roc_days, min_hold=10,
                                      open_prices=_exec_open,
                                      midday_prices=_midday_prices,
-                                     afternoon_open_prices=_afternoon_open_prices)
+                                     afternoon_open_prices=_afternoon_open_prices,
+                                     delay=delay)
                 cmp_data[m] = (nav2, bnav2, ret2, bret2, trades2, td2, tdets2)
 
         st.subheader(f"回测结果: {sel_group}  |  {actual_start_str} ~ {end_str}")
@@ -912,7 +978,7 @@ if run_btn:
                     elif key in ("夏普比率", "卡尔玛比率"):
                         cols[ci].metric(key, f"{mm.get(key, 0):.2f}", help=metric_help.get(key))
                     else:
-                        cols[ci].metric(key, f"{mm.get(key, 0):.2%}", help=metric_help.get(key))
+                        cols[ci].metric(key, f"{mm.get(key, 0):.3%}", help=metric_help.get(key))
             # pad empty columns so layout doesn't shift
             for ci in range(len(row_keys), cols_per_row):
                 cols[ci].markdown("")
@@ -957,7 +1023,7 @@ if run_btn:
             pos_rows.append({"ETF": k, "持有天数": d,
                              "占比": f"{d/total:.0%}" if total > 0 else "N/A",
                              "买入次数": b,
-                             "收益占比": f"{ct:+.1%}", "持有期累计收益": f"{cr:+.1%}", "上涨天数占比": f"{wr:.0%}"})
+                             "收益占比": f"{ct:+.3%}", "持有期累计收益": f"{cr:+.3%}", "上涨天数占比": f"{wr:.0%}"})
         st.dataframe(pd.DataFrame(pos_rows), hide_index=True, width='content')
         st.caption("收益占比=各ETF对数收益÷总对数收益(加总=100%) | 持有期累计收益=∏(1+r)-1 | 上涨天数占比=上涨天数÷持有天数")
 
@@ -993,7 +1059,7 @@ if run_btn:
                 d = c_days[k]; b = c_buys.get(k, 0)
                 ct = c_contrib.get(k, 0); cr = c_cum.get(k, 0); wr = c_wr.get(k, 0)
                 c_rows.append({"ETF": k, "持有天数": d, "占比": f"{d/c_total:.0%}", "买入次数": b,
-                               "收益占比": f"{ct:+.1%}", "持有期累计收益": f"{cr:+.1%}", "上涨天数占比": f"{wr:.0%}"})
+                               "收益占比": f"{ct:+.3%}", "持有期累计收益": f"{cr:+.3%}", "上涨天数占比": f"{wr:.0%}"})
             st.dataframe(pd.DataFrame(c_rows), hide_index=True, width='content')
             st.caption("收益占比=各ETF对数收益÷总对数收益(加总=100%) | 持有期累计收益=∏(1+r)-1 | 上涨天数占比=上涨天数÷持有天数")
             # Yearly returns for comparison
@@ -1031,13 +1097,17 @@ if run_btn:
 
     # Build price view with open prices and daily change
     price_data = {}
+    # Extend range by 1 day backward for pct_change on first backtest day
+    price_start = prices_full.index[prices_full.index <= pd.Timestamp(actual_start_str)]
+    price_start = price_start[-1] if len(price_start) > 0 else actual_start_str
     for name, code in etfs.items():
-        close_series = prices_full[name].loc[actual_start_str:end_str]
-        price_data[f"{name} 收盘"] = close_series.round(3)
+        close_full = prices_full[name].loc[price_start:end_str]
+        close_show = close_full.loc[actual_start_str:end_str]
+        price_data[f"{name} 收盘"] = close_show.round(3)
         if open_full is not None and name in open_full.columns:
-            open_series = open_full[name].loc[actual_start_str:end_str]
-            price_data[f"{name} 开盘"] = open_series.round(3)
-            chg = close_series.pct_change()
+            open_show = open_full[name].loc[actual_start_str:end_str]
+            price_data[f"{name} 开盘"] = open_show.round(3)
+            chg = close_full.pct_change().loc[actual_start_str:end_str]
             price_data[f"{name} 涨跌%"] = chg.apply(lambda v: f"{v:+.2%}" if pd.notna(v) else "—")
         else:
             price_data[f"{name} 开盘"] = "—"
@@ -1050,7 +1120,7 @@ if run_btn:
     st.dataframe(price_view, height=400, width='stretch')
     st.caption("收盘价/开盘价（未填充），按日期倒序。NaN = 当日无交易或数据缺失。")
 
-    if use_backtrader and daily_signals:
+    if daily_signals:
         st.divider()
         strategy_labels_short = {
             "momentum": "动量轮动", "rsi": "RSI均值回归",
@@ -1072,72 +1142,110 @@ if run_btn:
                 dk = str(s_dt)[:10]
                 sig_by_date[dk] = s
 
-        # Show all signal dates (not just trade dates) in reverse order, latest first
-        sig_dates = sorted(sig_by_date.keys(), reverse=True)
+        # Show all signal dates in reverse order, latest first
+        sig_dates = sorted(sig_by_date.keys())
+        sig_dates = [d for d in sig_dates if actual_start_str <= d <= end_str]
         max_rows = 30
         sig_rows = []
-        for dk in sig_dates[:max_rows]:
-            match = sig_by_date[dk]
-            td = pd.Timestamp(dk)
+        
+        # Build trade markers, buy/sell prices
+        signal_trade_dates = set()
+        exec_buy_price = {}          # exec_date_str -> (etf_name, price_str)
+        exec_sell_price = {}         # exec_date_str -> (etf_name, price_str)
+
+        for tdt, told, tnew in trade_details:
+            tdt_ts = pd.Timestamp(tdt) if not isinstance(tdt, pd.Timestamp) else tdt
+            exec_dk = str(tdt_ts)[:10]
+            if exec_timing == "T+1开盘":
+                prev_dates = prices_full.index[prices_full.index < tdt_ts]
+                if len(prev_dates) > 0:
+                    sig_dk = prev_dates[-1].strftime("%Y-%m-%d")
+                    signal_trade_dates.add(sig_dk)
+                    if tnew and tnew in open_full.columns and tdt_ts in open_full.index:
+                        exec_buy_price[exec_dk] = (tnew, f"{open_full[tnew].loc[tdt_ts]:.3f}")
+                    if told and told in open_full.columns and tdt_ts in open_full.index:
+                        exec_sell_price[exec_dk] = (told, f"{open_full[told].loc[tdt_ts]:.3f}")
+            else:
+                signal_trade_dates.add(exec_dk)
+                if tnew and tdt_ts in prices_full.index and tnew in prices_full.columns:
+                    exec_buy_price[exec_dk] = (tnew, f"{prices_full[tnew].loc[tdt_ts]:.3f}")
+                if told and tdt_ts in prices_full.index and told in prices_full.columns:
+                    exec_sell_price[exec_dk] = (told, f"{prices_full[told].loc[tdt_ts]:.3f}")
+
+        # Initial position
+        first_dates = [d for d in sorted(sig_by_date.keys()) if actual_start_str <= d <= end_str]
+        if first_dates:
+            fd = first_dates[0]
+            fh = sig_by_date[fd].get('holding') or 'CASH'
+            if fh != 'CASH' and fd not in signal_trade_dates:
+                signal_trade_dates.add(fd)
+                fdt = pd.Timestamp(fd)
+                if exec_timing != "T+1开盘":
+                    if fdt in prices_full.index and fh in prices_full.columns:
+                        exec_buy_price[fd] = (fh, f"{prices_full[fh].loc[fdt]:.3f}")
+                else:
+                    next_d = prices_full.index[prices_full.index > fdt]
+                    if len(next_d) > 0 and fh in open_full.columns and next_d[0] in open_full.index:
+                        exec_buy_price[str(next_d[0])[:10]] = (fh, f"{open_full[fh].loc[next_d[0]]:.3f}")
+
+        sig_rows = []
+        for dk in sig_dates[-max_rows:]:
+            match = sig_by_date[dk]; td = pd.Timestamp(dk)
             holding = match.get('holding', 'CASH') or 'CASH'
-            is_trade = dk in trade_date_set
-            trade_marker = "🔄" if is_trade else ""
-            holding_label = f"{holding} ({etf_codes.get(holding, '')})" if holding != 'CASH' else 'CASH'
-            row = {"日期": dk, "持仓": holding_label, "调仓": trade_marker}
+            is_trade = dk in signal_trade_dates
+            hlabel = f"{holding} ({etf_codes.get(holding, '')})" if holding != 'CASH' else 'CASH'
+            buy_info = exec_buy_price.get(dk)
+            sell_info = exec_sell_price.get(dk)
+            buy_px_str = "—"
+            sell_px_str = "—"
+            if buy_info and not (exec_timing == "T+1开盘" and is_trade):
+                buy_px_str = buy_info[1]
+            if sell_info:
+                sell_px_str = sell_info[1]
+
+            row = {"日期": dk, "持仓": hlabel,
+                   "调仓": "🔄" if is_trade else "",
+                   "买入价格": buy_px_str,
+                   "卖出价格": sell_px_str}
+            # Track which ETF cols to highlight for this row
+            buy_etf = buy_info[0] if buy_info else None
+            sell_etf = sell_info[0] if sell_info else None
+
             for name, code in etfs.items():
                 val = match.get(name)
-                # Open price
-                open_px = None
+                open_px = "—"; close_px = "—"; chg_str = "—"
                 if open_full is not None and name in open_full.columns and td in open_full.index:
-                    o = open_full[name].loc[td]
-                    open_px = f"{o:.3f}" if pd.notna(o) else "—"
-                else:
-                    open_px = "—"
-                close_px = "—"
-                chg_str = "—"
+                    o = open_full[name].loc[td]; open_px = f"{o:.3f}" if pd.notna(o) else "—"
                 if td in prices_full.index and name in prices_full.columns:
                     px_today = prices_full[name].loc[td]
-                    if pd.notna(px_today):
-                        close_px = f"{px_today:.3f}"
+                    if pd.notna(px_today): close_px = f"{px_today:.3f}"
                     prev_idx = prices_full.index[prices_full.index < td]
                     if len(prev_idx) > 0:
                         px_prev = prices_full[name].loc[prev_idx[-1]]
                         if pd.notna(px_today) and pd.notna(px_prev) and px_prev > 0:
-                            chg_str = f"{(px_today / px_prev - 1):+.2%}"
-                # Midday price (11:30 close, for midday execution mode)
-                mid_px = "—"
-                if _use_midday and _midday_prices is not None and name in _midday_prices.columns:
-                    if td in _midday_prices.index:
-                        mv = _midday_prices[name].loc[td]
-                        mid_px = f"{mv:.3f}" if pd.notna(mv) else "—"
-                # Indicator value
+                            chg_str = f"{(px_today / px_prev - 1):+.3%}"
                 if val is not None:
                     indicator_str = f"{round(val, 4)}"
-                    # Check MA pass (for momentum-like strategies)
-                    if strategy in ("momentum", "mom_rsi", "mom_bb", "vol_weighted",
-                                    "stop_loss", "dual_lookback", "trend_strength"):
-                        px_val = prices_full[name].get(td, np.nan) if td in prices_full.index else np.nan
-                        if pd.notna(px_val):
-                            p_ffill = prices_full[name].ffill()
-                            ma_val = p_ffill.rolling(ma_days).mean().get(td, np.nan)
-                            if pd.notna(ma_val) and px_val <= ma_val:
-                                indicator_str += " ✗MA"
-                        else:
-                            indicator_str += " ✗数据"
+                    px_val = prices_full[name].get(td, np.nan) if td in prices_full.index else np.nan
+                    if pd.notna(px_val):
+                        p_ffill = prices_full[name].ffill()
+                        ma_val = p_ffill.rolling(ma_days).mean().get(td, np.nan)
+                        if pd.notna(ma_val) and px_val <= ma_val: indicator_str += " ✗MA"
+                    else: indicator_str += " ✗数据"
                     row[f"{name} 指标"] = indicator_str
-                    row[f"{name} 开盘"] = open_px
+                else: row[f"{name} 指标"] = "—"
+                # Highlight buy/sell on execution price column
+                if exec_timing == "T+1开盘":
+                    op = open_px if open_px != "—" else "—"
+                    row[f"{name} 开盘"] = ("▶" if name==buy_etf else "") + ("◀" if name==sell_etf else "") + (f" {op}" if op!="—" else "—")
                     row[f"{name} 收盘"] = close_px
-                    if _use_midday:
-                        row[f"{name} 中午"] = mid_px
-                    row[f"{name} 涨幅"] = chg_str
                 else:
-                    row[f"{name} 指标"] = "—"
+                    cp = close_px if close_px != "—" else "—"
+                    row[f"{name} 收盘"] = ("▶" if name==buy_etf else "") + ("◀" if name==sell_etf else "") + (f" {cp}" if cp!="—" else "—")
                     row[f"{name} 开盘"] = open_px
-                    row[f"{name} 收盘"] = close_px
-                    if _use_midday:
-                        row[f"{name} 中午"] = mid_px
-                    row[f"{name} 涨幅"] = chg_str
+                row[f"{name} 涨幅"] = chg_str
             sig_rows.append(row)
+        sig_rows.reverse()  # show latest first
         if sig_rows:
             n_trade = sum(1 for r in sig_rows if r["调仓"] == "🔄")
             st.caption(
@@ -1145,8 +1253,18 @@ if run_btn:
                 f"其中 {n_trade} 天发生调仓（🔄标记）。"
                 f"数值为策略排名指标（动量=ROC，RSI=RSI值，BB=%B，MACD=柱状线），越大越优先。"
                 f"「—」= 当日数据缺失。「✗MA」= 指标有效但未通过MA{ma_days}趋势过滤。「✗数据」= 当日无交易数据。"
+                f" ▶🟢=买入 ◀🔴=卖出"
             )
-            st.dataframe(pd.DataFrame(sig_rows), height=400, hide_index=True, width='stretch')
+            df_sig = pd.DataFrame(sig_rows)
+            # Color buy/sell price cells: green for buy, red for sell
+            def _highlight_prices(val):
+                if isinstance(val, str) and val.startswith("▶"):
+                    return 'background-color: #d4edda; color: #155724'  # green
+                elif isinstance(val, str) and val.startswith("◀"):
+                    return 'background-color: #f8d7da; color: #721c24'  # red
+                return ''
+            styled = df_sig.style.applymap(_highlight_prices)
+            st.dataframe(styled, height=400, hide_index=True, width='stretch')
 
     # ── Compare all groups ────────────────────────────────
     if compare_all:
@@ -1196,23 +1314,26 @@ if run_btn:
             rows = []
             for m in modes_to_run:
                 if use_backtrader:
+                    bt_m = 'moc' if gopen_full is None else 'moo'
                     gnav, gbnav, gret, gbret, gtrades, gtd, gtdets, _ = \
                         run_backtest_bt(gprices_full, m, gactual_str, end_str, ma_days, roc_days,
-                                        strategy=strategy, open_prices=gopen_full)
+                                        strategy=bt_m, open_prices=gopen_full,
+                                        exec_mode=bt_m)
                 else:
-                    gnav, gbnav, gret, gbret, gtrades, gtd, gtdets = \
+                    gnav, gbnav, gret, gbret, gtrades, gtd, gtdets, _ = \
                         run_backtest(gprices_full, m, gactual_str, end_str, ma_days, roc_days,
                                      open_prices=gopen_full,
                                      midday_prices=gmidday,
-                                     afternoon_open_prices=gaft_open)
+                                     afternoon_open_prices=gaft_open,
+                                     delay=delay)
                 gm = calc_metrics(gnav, gret)
                 gwr = trade_win_rate(gret, gtdets, gprices_full)
                 rows.append({
                     "组合": gname, "模式": m.upper(),
-                    "累计收益": f"{gm.get('累计收益', 0):.2%}",
-                    "年化收益": f"{gm.get('年化收益', 0):.2%}",
+                    "累计收益": f"{gm.get('累计收益', 0):.3%}",
+                    "年化收益": f"{gm.get('年化收益', 0):.3%}",
                     "夏普比率": f"{gm.get('夏普比率', 0):.2f}",
-                    "最大回撤": f"{gm.get('最大回撤', 0):.2%}",
+                    "最大回撤": f"{gm.get('最大回撤', 0):.3%}",
                     "卡尔玛比率": f"{gm.get('卡尔玛比率', 0):.2f}",
                     "胜率": f"{gwr:.0%}", "交易次数": gtrades,
                 })
@@ -1259,7 +1380,8 @@ if run_btn:
                                  ma_range, roc_range, prog,
                                  open_prices=_exec_open,
                                  midday_prices=_midday_prices,
-                                 afternoon_open_prices=_afternoon_open_prices)
+                                 afternoon_open_prices=_afternoon_open_prices,
+                                 delay=delay)
             status.update(label=f"完成 {total_combo} 种组合", state="complete")
 
         # ── Result table per mode ──

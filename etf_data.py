@@ -29,10 +29,13 @@ def fetch_one_tencent(code: str, days: int = 800) -> pd.Series:
         data = json.loads(resp.read())
     inner = data["data"][f"{m}{code}"]
     klines = inner.get("qfqday") or inner.get("day") or []
-    rows = [{"日期": k[0], "收盘": float(k[2])} for k in klines]
+    rows = [{"日期": k[0], "开盘": float(k[1]), "收盘": float(k[2])} for k in klines]
     df = pd.DataFrame(rows)
     df["日期"] = pd.to_datetime(df["日期"])
-    return df.set_index("日期")["收盘"]
+    df = df.set_index("日期")
+    close = df["收盘"]
+    close._open = df["开盘"]
+    return close
 
 
 def _fix_splits(s: pd.Series, threshold: float = 0.5) -> pd.Series:
@@ -94,9 +97,11 @@ def fetch_one_akshare(code: str, days: int = 0) -> pd.Series:
     ratio = (tencent.loc[overlap[:10]] / sina_close.loc[overlap[:10]]).median()
     # Store open prices as an attribute so caller can retrieve them
     result_close = pd.concat([sina_early_close_fixed * ratio, tencent]).sort_index()
-    # Build open: Sina early + tencent open (approximated as prev close for tencent part)
-    tencent_open = pd.Series(np.roll(tencent.values, 1), index=tencent.index)
-    tencent_open.iloc[0] = tencent.iloc[0]
+    # Build open: Sina early + tencent open (from tencent OHLC data)
+    tencent_open = get_open_from_result(tencent)
+    if tencent_open is None:
+        tencent_open = pd.Series(np.roll(tencent.values, 1), index=tencent.index)
+        tencent_open.iloc[0] = tencent.iloc[0]
     result_open = pd.concat([sina_early_open_fixed * ratio, tencent_open]).sort_index()
     result_open = result_open[~result_open.index.duplicated()]
     # Attach open to result as attribute (hack to avoid changing return type)
@@ -206,11 +211,13 @@ def load_prices(etfs: dict, group_name: str = "default", source: str = "tencent"
     # Intraday / post-close refresh for today's data
     if not is_stale and len(cached) > 0:
         today = pd.Timestamp.now().normalize()
+        now = pd.Timestamp.now()
+        is_trading_day = now.dayofweek < 5
+        tracked = [c for c in etfs.values() if c in cached.columns]
+
         if today in cached.index:
-            now = pd.Timestamp.now()
-            is_trading = now.dayofweek < 5 and 9 <= now.hour < 15
-            tracked = [c for c in etfs.values() if c in cached.columns]
             today_has_nan = bool(tracked) and cached.loc[today, tracked].isna().any() if tracked else False
+            is_trading = is_trading_day and 9 <= now.hour < 15
 
             if is_trading:
                 # During trading hours: re-fetch if cache file hasn't been updated in 5+ min
@@ -218,10 +225,25 @@ def load_prices(etfs: dict, group_name: str = "default", source: str = "tencent"
                 if (now - cache_mtime).total_seconds() > 300:
                     print(f"[{source}] 交易时段缓存已过{int((now - cache_mtime).total_seconds() / 60)}分钟，重新拉取...")
                     is_stale = True
-            elif now.hour >= 15 and today_has_nan:
-                # After close: if today was fetched intraday with partial data → re-fetch
-                print(f"[{source}] 今日盘中缓存不完整（{cached.loc[today, tracked].isna().sum()}/{len(tracked)}个ETF无数据），收盘后重新拉取...")
-                is_stale = True
+            elif now.hour >= 15:
+                # st_mtime is POSIX UTC, convert to local datetime for hour check
+                from datetime import datetime as dt_mod
+                cache_mtime_local = pd.Timestamp(
+                    dt_mod.fromtimestamp(cache_file.stat().st_mtime))
+                already_refreshed_today = (cache_mtime_local.normalize() == today
+                                           and cache_mtime_local.hour >= 15)
+                if not already_refreshed_today:
+                    was_fetched_intraday = cache_mtime_local.hour < 15
+                    if was_fetched_intraday:
+                        print(f"[{source}] 盘中缓存需刷新为收盘价，重新拉取...")
+                        is_stale = True
+                    elif today_has_nan:
+                        print(f"[{source}] 今日盘中缓存不完整，收盘后重新拉取...")
+                    is_stale = True
+        elif is_trading_day and today > cached.index[-1] and now.hour >= 9:
+            # Today not in cache at all → only fetch after market opens
+            print(f"[{source}] 缺少今日数据，拉取...")
+            is_stale = True
     new_codes = [c for c in set(etfs.values()) if c not in cached.columns]
 
     if is_stale or new_codes:
@@ -259,7 +281,11 @@ def load_prices(etfs: dict, group_name: str = "default", source: str = "tencent"
         new_data = pd.DataFrame(results).dropna(how='all')
 
         if is_stale:
-            cached = new_data
+            # merge to preserve today's data if re-fetch didn't return it
+            if len(cached) > 0 and today not in new_data.index and today in cached.index:
+                cached = cached.combine_first(new_data)
+            else:
+                cached = new_data
         else:
             cached = cached.combine_first(new_data)
 
