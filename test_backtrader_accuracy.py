@@ -18,7 +18,7 @@ def test_signal_identity():
     prices = load_prices(etfs, "默认组合", source="tencent")
 
     for mode in ["daily", "friday"]:
-        _, _, _, _, trades_m, td_m, tdet_m = run_manual(prices, mode, "2025-06-01", "2026-04-30")
+        _, _, _, _, trades_m, td_m, tdet_m, _ = run_manual(prices, mode, "2025-06-01", "2026-04-30")
         _, _, _, _, trades_bt, td_bt, tdet_bt, _ = run_backtest_bt(prices, mode, "2025-06-01", "2026-04-30")
 
         assert trades_m == trades_bt, f"{mode}: trade count mismatch {trades_m} vs {trades_bt}"
@@ -36,7 +36,7 @@ def test_nav_correlation():
     prices = load_prices(etfs, "默认组合", source="tencent")
 
     for mode in ["daily", "friday"]:
-        nav_m, _, ret_m, _, _, _, _ = run_manual(prices, mode, "2025-06-01", "2026-04-30")
+        nav_m, _, ret_m, _, _, _, _, _ = run_manual(prices, mode, "2025-06-01", "2026-04-30")
         nav_bt, _, ret_bt, _, _, _, _, _ = run_backtest_bt(prices, mode, "2025-06-01", "2026-04-30")
 
         common = nav_m.index.intersection(nav_bt.index)
@@ -53,7 +53,7 @@ def test_nav_deviation():
     prices = load_prices(etfs, "默认组合", source="tencent")
 
     for mode in ["daily", "friday"]:
-        nav_m, _, _, _, _, _, _ = run_manual(prices, mode, "2025-06-01", "2026-04-30")
+        nav_m, _, _, _, _, _, _, _ = run_manual(prices, mode, "2025-06-01", "2026-04-30")
         nav_bt, _, _, _, _, _, _, _ = run_backtest_bt(prices, mode, "2025-06-01", "2026-04-30")
 
         deviation = abs(nav_m.iloc[-1] / nav_bt.iloc[-1] - 1)
@@ -69,7 +69,7 @@ def test_metrics_consistency():
     prices = load_prices(etfs, "默认组合", source="tencent")
 
     for mode in ["daily", "friday"]:
-        nav_m, _, ret_m, _, _, _, _ = run_manual(prices, mode, "2025-06-01", "2026-04-30")
+        nav_m, _, ret_m, _, _, _, _, _ = run_manual(prices, mode, "2025-06-01", "2026-04-30")
         nav_bt, _, ret_bt, _, _, _, _, _ = run_backtest_bt(prices, mode, "2025-06-01", "2026-04-30")
 
         mm = metrics(nav_m, ret_m)
