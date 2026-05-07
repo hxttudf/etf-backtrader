@@ -756,7 +756,6 @@ group_names = list(cfg["groups"].keys())
 if sel_group not in group_names:
     sel_group = group_names[0]
 
-# ── Date pickers ──
 start_date = st.sidebar.date_input("开始日期",
     pd.Timestamp(_qp("start", "2025-04-30")),
     min_value=pd.Timestamp("2010-01-01"),
