@@ -1064,6 +1064,21 @@ def _convert_output(strat, prices, start_date, end_date, etf_names):
 
     ret = nav.pct_change().fillna(0.0)
 
+    # Apply commission to match manual engine (broker commission normalized away)
+    COMM = 0.0001; STAMP = 0.0005
+    trade_dates_set = {pd.Timestamp(t[0]) for t in strat._trade_log}
+    for i in range(len(ret)):
+        dt = ret.index[i]
+        if dt in trade_dates_set:
+            # Find matching trade
+            for tdt, told, tnew in strat._trade_log:
+                if pd.Timestamp(tdt) == dt:
+                    if told is not None:
+                        ret.iloc[i] -= COMM + STAMP  # sell
+                    if tnew is not None:
+                        ret.iloc[i] -= COMM  # buy
+                    break
+
     price_trim = (prices.index >= start_ts) & (prices.index <= end_ts)
     returns = prices.pct_change(fill_method=None)
     bench_ret = returns[price_trim].mean(axis=1)

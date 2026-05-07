@@ -720,8 +720,9 @@ _qp = lambda k, d: qp[k] if k in qp else d
 # Group selector + config button
 col1, col2 = st.sidebar.columns([3, 1])
 group_names = list(cfg["groups"].keys())
+_default_group = "红纳创黄C" if "红纳创黄C" in group_names else group_names[0]
 sel_group = col1.selectbox("组合", group_names,
-                         index=group_names.index(_qp("g", group_names[0])) if _qp("g", group_names[0]) in group_names else 0,
+                         index=group_names.index(_qp("g", _default_group)) if _qp("g", _default_group) in group_names else 0,
                          key="group_sel_v4")
 with col2:
     st.write(" ")
@@ -754,7 +755,7 @@ if st.session_state.get("show_config", False):
 # Re-sync group list after edits
 group_names = list(cfg["groups"].keys())
 if sel_group not in group_names:
-    sel_group = group_names[0]
+    sel_group = "红纳创黄C" if "红纳创黄C" in group_names else group_names[0]
 
 start_date = st.sidebar.date_input("开始日期",
     pd.Timestamp(_qp("start", "2025-04-30")),
@@ -784,7 +785,7 @@ compare_all = st.sidebar.checkbox("对比所有组合", value=False,
     help="同时回测所有已配置组合，并排对比关键指标")
 run_btn = st.sidebar.button("🚀 开始回测", type="primary", width='stretch')
 exec_timing = st.sidebar.selectbox("执行时机",
-    ["T+1开盘", "T+1收盘", "中午→下午"],
+    ["T+1收盘", "T+1开盘", "中午→下午"],
     index=0,
     format_func=lambda x: {
         "T+1开盘": "T+1 开盘执行（T日信号+T+1日开盘买卖）",
