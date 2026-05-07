@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+
+# Mac
+.DS_Store
+
+# IDE / Claude
+.claude/
+.superpowers/
+.team-dev/
+.omc/
+
+# Planning artifacts
+.planning/
+
+# AGENTS
+AGENTS.md
+
+# MemPalace
+mempalace.yaml
+entities.json
+
+# ETF generated output
+docs/etf/*.html
+docs/etf/*.png
+docs/etf/build/
+docs/etf/dist/
