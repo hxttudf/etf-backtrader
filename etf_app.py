@@ -9,11 +9,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
+import json
 import math
 
 import numpy as np
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 # Ensure the script dir is on sys.path so imports work both in dev and PyInstaller
 sys.path.insert(0, str(Path(__file__).parent))
@@ -63,6 +65,90 @@ def cached_prices(etfs: dict, group_name: str, source: str = "tencent") -> pd.Da
 @st.cache_data(ttl=60)
 def cached_open_prices(etfs: dict, group_name: str, source: str = "akshare") -> pd.DataFrame | None:
     return load_open_prices(etfs, group_name, source=source)
+
+
+@st.cache_data(ttl=86400)
+def get_trading_days() -> set[str]:
+    """A 股交易日集合，24h 刷新一次。覆盖 2005 ~ 今年+3 年。"""
+    import akshare as ak
+    df = ak.tool_trade_date_hist_sina()
+    all_dates: set[str] = {d.strftime("%Y-%m-%d") if hasattr(d, 'strftime') else str(d)[:10] for d in df["trade_date"]}
+    return all_dates
+
+
+def trading_date_input(label: str, default: pd.Timestamp,
+                       trading_days: set[str],
+                       key: str = "") -> pd.Timestamp:
+    """交易日历选择器 — 非 A 股交易日灰色不可选。"""
+    default_str = default.strftime("%Y-%m-%d")
+    # 只传与 flatpickr 相关的交易日（削减 payload）
+    today = pd.Timestamp.now()
+    trading_list = sorted(
+        d for d in trading_days
+        if d >= "2005-01-01" and d <= (today + pd.Timedelta(days=365 * 3)).strftime("%Y-%m-%d")
+    )
+
+    html = f"""<!DOCTYPE html>
+<html><head>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/airbnb.css">
+<script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+<script src="https://npmcdn.com/flatpickr/dist/l10n/zh.js"></script>
+</head><body>
+<div style="margin-bottom:4px;font-size:14px;color:rgb(49,51,63)">{label}</div>
+<input type="text" id="dt_{key}" style="width:100%;padding:8px 12px;border:1px solid #ccc;border-radius:4px;font-size:14px">
+<script>
+const tradingSet = new Set({json.dumps(trading_list)});
+const key = "{key}";
+
+function isTrading(d) {{
+    const ds = d.getFullYear() + '-' +
+        String(d.getMonth()+1).padStart(2,'0') + '-' +
+        String(d.getDate()).padStart(2,'0');
+    return tradingSet.has(ds);
+}}
+
+const fp = flatpickr("#dt_{key}", {{
+    locale: "zh",
+    dateFormat: "Y-m-d",
+    defaultDate: "{default_str}",
+    allowInput: false,
+    disable: [function(d) {{ return !isTrading(d); }}],
+    onReady: function() {{
+        window.parent.postMessage({{
+            type: "streamlit:setComponentValue",
+            value: "{default_str}"
+        }}, "*");
+    }},
+    onChange: function(_, ds) {{
+        window.parent.postMessage({{
+            type: "streamlit:setComponentValue",
+            value: ds
+        }}, "*");
+    }}
+}});
+
+// Listen for Streamlit argument updates (re-render)
+window.addEventListener('message', function(e) {{
+    if (e.data.type === 'streamlit:arguments' && e.data.args) {{
+        const a = e.data.args;
+        if (a.default) fp.setDate(a.default);
+        if (a.trading_list) {{
+            const s = new Set(a.trading_list);
+            fp.set('disable', [function(d) {{
+                const ds = d.getFullYear() + '-' +
+                    String(d.getMonth()+1).padStart(2,'0') + '-' +
+                    String(d.getDate()).padStart(2,'0');
+                return !s.has(ds);
+            }}]);
+        }}
+    }}
+}});
+</script></body></html>"""
+
+    result = components.html(html, height=70, key=f"tdi_{key}")
+    if result is not None and isinstance(result, str) and result:
+        return pd.Timestamp(result)
+    return default
 
 
 def _safe_loc(df, col, dt, fallback_prices, i):
@@ -680,6 +766,8 @@ st.sidebar.header("📊 回测参数")
 qp = st.query_params
 _qp = lambda k, d: qp[k] if k in qp else d
 
+trading_days = get_trading_days()
+
 # Group selector + config button
 col1, col2 = st.sidebar.columns([3, 1])
 group_names = list(cfg["groups"].keys())
@@ -720,16 +808,12 @@ group_names = list(cfg["groups"].keys())
 if sel_group not in group_names:
     sel_group = "红纳创黄C" if "红纳创黄C" in group_names else group_names[0]
 
-start_date = st.sidebar.date_input("开始日期",
+start_date = trading_date_input("开始日期",
     pd.Timestamp(_qp("start", "2025-04-30")),
-    min_value=pd.Timestamp("2010-01-01"),
-    max_value=pd.Timestamp.today(),
-    key="sb_start")
-end_date = st.sidebar.date_input("结束日期",
+    trading_days, key="start")
+end_date = trading_date_input("结束日期",
     pd.Timestamp(_qp("end", datetime.today().strftime("%Y-%m-%d"))),
-    min_value=pd.Timestamp("2010-01-01"),
-    max_value=pd.Timestamp.today(),
-    key="sb_end")
+    trading_days, key="end")
 mode = st.sidebar.radio("调仓模式", ["daily", "friday", "both"], horizontal=True,
                         index=["daily","friday","both"].index(_qp("mode", "daily")),
                         format_func=lambda x: {"daily": "每日", "friday": "周五", "both": "两者"}[x], key="sb_mode")
