@@ -824,8 +824,8 @@ with st.sidebar.expander("⏰ 实操指南"):
 # ── Main area ────────────────────────────────────────────
 if run_btn:
     etfs = cfg["groups"][sel_group]
-    start_str = str(start_date)
-    end_str = str(end_date)
+    start_str = start_date.strftime("%Y-%m-%d")
+    end_str = end_date.strftime("%Y-%m-%d")
     lookback = (pd.Timestamp(start_str) - pd.Timedelta(days=200)).strftime("%Y-%m-%d")
 
     with st.spinner("加载数据 & 运行回测..."):
