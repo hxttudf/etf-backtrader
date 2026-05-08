@@ -88,44 +88,58 @@ def trading_date_range(start_default: pd.Timestamp, end_default: pd.Timestamp,
 
     html = f"""<!DOCTYPE html>
 <html><head>
+<meta charset="utf-8">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/airbnb.css">
-<script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
-<script src="https://npmcdn.com/flatpickr/dist/l10n/zh.js"></script>
 <style>
 *{{box-sizing:border-box}}
-body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;padding:4px;background:transparent;min-width:240px}}
-label{{font-size:12px;color:rgb(100,100,100);display:block;margin-bottom:2px}}
-input{{display:none}}
-.flatpickr-calendar.inline{{top:0!important;box-shadow:none!important;margin:0 auto}}
-.flatpickr-calendar{{font-size:12px!important;animation:none!important}}
-.flatpickr-rContainer{{display:block!important}}
-.flatpickr-day{{max-width:32px!important;height:30px!important;line-height:30px!important}}
-.flatpickr-weekday{{font-size:10px!important;height:22px!important;line-height:22px!important}}
-.flatpickr-current-month{{font-size:13px!important}}
-.flatpickr-months .flatpickr-prev-month svg,.flatpickr-months .flatpickr-next-month svg{{width:14px;height:14px}}
+body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;padding:0;background:#fff;width:240px}}
+label{{font-size:12px;color:rgb(100,100,100);display:block;margin:6px 6px 2px 6px}}
+input[type=text]{{width:228px;margin:0 6px;padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:12px;height:28px}}
+.flatpickr-calendar.inline{{top:0!important;box-shadow:none!important;animation:none!important;margin:0 6px}}
+.flatpickr-calendar{{font-size:11px!important}}
+.flatpickr-day{{max-width:30px!important;height:26px!important;line-height:26px!important}}
+.flatpickr-weekday{{font-size:9px!important;height:20px!important;line-height:20px!important}}
+.flatpickr-current-month{{font-size:12px!important;padding:2px 0}}
+.flatpickr-months .flatpickr-month{{height:26px}}
+.flatpickr-months .flatpickr-prev-month,.flatpickr-months .flatpickr-next-month{{height:24px;padding:4px}}
+.flatpickr-months .flatpickr-prev-month svg,.flatpickr-months .flatpickr-next-month svg{{width:12px;height:12px}}
 .flatpickr-day.today{{border-color:#2563eb}}
-hr.divider{{border:none;border-top:1px solid #eee;margin:6px 0}}
+hr{{border:none;border-top:1px solid #eee;margin:4px 0}}
 </style>
 </head><body>
-<label>开始日期</label><input type="text" id="dt_start"><div id="cal_start"></div>
-<hr class="divider">
-<label>结束日期</label><input type="text" id="dt_end"><div id="cal_end"></div>
+<label>开始日期</label>
+<input type="text" id="dt_start" value="{sd}">
+<div id="cal_start"></div>
+<hr>
+<label>结束日期</label>
+<input type="text" id="dt_end" value="{ed}">
+<div id="cal_end"></div>
+<script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+<script src="https://npmcdn.com/flatpickr/dist/l10n/zh.js"></script>
 <script>
 var tradingSet = new Set({json.dumps(trading_list)});
 function isTrading(d){{
     var s = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
     return tradingSet.has(s);
 }}
-function fmt(d){{return d?d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'):'';}}
 function send(){{
-    var s=fpStart.selectedDates[0];var e=fpEnd.selectedDates[0];
-    window.parent.postMessage({{type:"streamlit:setComponentValue",value:JSON.stringify({{start:s?fmt(s):"{sd}",end:e?fmt(e):"{ed}"}})}},"*");
+    window.parent.postMessage({{type:"streamlit:setComponentValue",value:JSON.stringify({{start:document.getElementById('dt_start').value,end:document.getElementById('dt_end').value}})}},"*");
 }}
-var fpStart=flatpickr("#cal_start",{{inline:true,locale:"zh",dateFormat:"Y-m-d",defaultDate:"{sd}",disable:[function(d){{return !isTrading(d);}}],onChange:send}});
-var fpEnd=flatpickr("#cal_end",{{inline:true,locale:"zh",dateFormat:"Y-m-d",defaultDate:"{ed}",disable:[function(d){{return !isTrading(d);}}],onChange:send}});
+var fpStart = flatpickr("#dt_start",{{
+    inline:true,locale:"zh",dateFormat:"Y-m-d",defaultDate:"{sd}",
+    disable:[function(d){{return !isTrading(d);}}],
+    appendTo:document.getElementById('cal_start'),
+    onChange:function(_,ds){{send();}}
+}});
+var fpEnd = flatpickr("#dt_end",{{
+    inline:true,locale:"zh",dateFormat:"Y-m-d",defaultDate:"{ed}",
+    disable:[function(d){{return !isTrading(d);}}],
+    appendTo:document.getElementById('cal_end'),
+    onChange:function(_,ds){{send();}}
+}});
 </script></body></html>"""
 
-    result = components.html(html, height=420, scrolling=False)
+    result = components.html(html, height=440, scrolling=False)
     if result is not None and isinstance(result, str) and result:
         try:
             data = json.loads(result)
