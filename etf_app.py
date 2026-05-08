@@ -77,7 +77,8 @@ def get_trading_days() -> set[str]:
 
 def trading_date_range(start_default: pd.Timestamp, end_default: pd.Timestamp,
                        trading_days: set[str]) -> tuple[pd.Timestamp, pd.Timestamp]:
-    """交易日起始/结束日期选择器 — 非 A 股交易日灰色不可选。"""
+    """交易日起始/结束日期选择器 — 非 A 股交易日灰色不可选。
+    点击展开日历时扩高，关闭缩回 68px。"""
     sd = start_default.strftime("%Y-%m-%d")
     ed = end_default.strftime("%Y-%m-%d")
     today = pd.Timestamp.now()
@@ -92,13 +93,14 @@ def trading_date_range(start_default: pd.Timestamp, end_default: pd.Timestamp,
 <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
 <script src="https://npmcdn.com/flatpickr/dist/l10n/zh.js"></script>
 <style>
-body{{margin:0;padding:4px;font-family:sans-serif;background:#fff}}
+body{{margin:0;padding:4px;font-family:sans-serif;background:#fff;overflow:visible}}
 input{{width:100%;padding:4px 10px;border:1px solid #ccc;border-radius:4px;font-size:13px;height:30px;box-sizing:border-box}}
-div+input{{margin-top:4px}}
+input+input{{margin-top:4px}}
 </style></head><body>
 <input type="text" id="dt_start" value="{sd}" placeholder="开始日期">
 <input type="text" id="dt_end" value="{ed}" placeholder="结束日期">
 <script>
+function post(t,d){{window.parent.postMessage(Object.assign({{isStreamlitMessage:true,type:t}},d||{{}}),"*");}}
 var tradingSet = new Set({json.dumps(trading_list)});
 function isTrading(d){{
     var ds=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
@@ -107,13 +109,15 @@ function isTrading(d){{
 function fmt(d){{return d?d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'):'';}}
 function send(){{
     var s=fpStart.selectedDates[0],e=fpEnd.selectedDates[0];
-    window.parent.postMessage({{type:"streamlit:setComponentValue",value:JSON.stringify({{start:s?fmt(s):"{sd}",end:e?fmt(e):"{ed}"}})}},"*");
+    post("streamlit:setComponentValue",{{value:JSON.stringify({{start:s?fmt(s):"{sd}",end:e?fmt(e):"{ed}"}})}});
 }}
-var fpStart=flatpickr("#dt_start",{{locale:"zh",dateFormat:"Y-m-d",defaultDate:"{sd}",disable:[function(d){{return !isTrading(d);}}],onChange:send}});
-var fpEnd=flatpickr("#dt_end",{{locale:"zh",dateFormat:"Y-m-d",defaultDate:"{ed}",disable:[function(d){{return !isTrading(d);}}],onChange:send}});
+var fpStart=flatpickr("#dt_start",{{locale:"zh",dateFormat:"Y-m-d",defaultDate:"{sd}",disable:[function(d){{return !isTrading(d);}}],onChange:send,onOpen:[function(){{post("streamlit:setFrameHeight",{{height:400}});}}],onClose:[function(){{post("streamlit:setFrameHeight",{{height:68}});}}]}});
+var fpEnd=flatpickr("#dt_end",{{locale:"zh",dateFormat:"Y-m-d",defaultDate:"{ed}",disable:[function(d){{return !isTrading(d);}}],onChange:send,onOpen:[function(){{post("streamlit:setFrameHeight",{{height:400}});}}],onClose:[function(){{post("streamlit:setFrameHeight",{{height:68}});}}]}});
+// Shrink to compact size on load
+setTimeout(function(){{post("streamlit:setFrameHeight",{{height:68}});}},200);
 </script></body></html>"""
 
-    result = components.html(html, height=380, scrolling=False)
+    result = components.html(html, height=68, scrolling=False)
     if result is not None and isinstance(result, str) and result:
         try:
             data = json.loads(result)
