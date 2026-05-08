@@ -78,7 +78,7 @@ def get_trading_days() -> set[str]:
 def trading_date_range(start_default: pd.Timestamp, end_default: pd.Timestamp,
                        trading_days: set[str]) -> tuple[pd.Timestamp, pd.Timestamp]:
     """交易日起始/结束日期选择器 — 非 A 股交易日灰色不可选。
-    单 inline 日历，点击输入框切换控制开始/结束日期。"""
+    两个独立内联日历，紧凑缩放。"""
     sd = start_default.strftime("%Y-%m-%d")
     ed = end_default.strftime("%Y-%m-%d")
     today = pd.Timestamp.now()
@@ -95,49 +95,40 @@ def trading_date_range(start_default: pd.Timestamp, end_default: pd.Timestamp,
 <style>
 *{{box-sizing:border-box}}
 body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;padding:4px;background:transparent}}
-.row{{display:flex;gap:6px;margin-bottom:4px}}
-.col{{flex:1}}
-.col input{{width:100%;padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;height:30px;cursor:pointer;background:#fff}}
-.col input.active{{border-color:#2563eb;box-shadow:0 0 0 1px #2563eb}}
-.cal-wrap{{display:flex;justify-content:center}}
+.wrap{{margin-bottom:6px}}
+.wrap:last-child{{margin-bottom:0}}
+label{{font-size:12px;color:rgb(49,51,63);display:block;margin-bottom:2px;font-weight:500}}
+input{{display:none}}
+.flatpickr-calendar.inline{{top:0!important;box-shadow:none!important;width:100%!important;max-width:100%!important}}
+.flatpickr-calendar{{font-size:11px!important}}
+.flatpickr-day{{max-width:30px!important;height:28px!important;line-height:28px!important}}
+.flatpickr-months .flatpickr-month{{height:30px}}
+.flatpickr-current-month{{font-size:12px!important;padding-top:2px}}
+.flatpickr-weekday{{font-size:10px!important;height:22px!important;line-height:22px!important}}
+span.flatpickr-weekday{{font-size:10px}}
+.flatpickr-months .flatpickr-prev-month,.flatpickr-months .flatpickr-next-month{{height:28px;padding:6px}}
+.flatpickr-months .flatpickr-prev-month svg,.flatpickr-months .flatpickr-next-month svg{{width:12px;height:12px}}
+.flatpickr-day.today{{border-color:#2563eb}}
 </style>
 </head><body>
-<div class="row">
-<div class="col"><input type="text" id="dt_start" value="{sd}" readonly></div>
-<div class="col"><input type="text" id="dt_end" value="{ed}" readonly></div>
-</div>
-<div class="cal-wrap"><div id="cal"></div></div>
+<div class="wrap"><label>开始日期</label><input type="text" id="dt_start"><div id="cal_start"></div></div>
+<div class="wrap"><label>结束日期</label><input type="text" id="dt_end"><div id="cal_end"></div></div>
 <script>
 var tradingSet = new Set({json.dumps(trading_list)});
-var state = {{start:"{sd}",end:"{ed}",active:"start"}};
 function isTrading(d){{
     var s = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
     return tradingSet.has(s);
 }}
+function fmt(d){{return d?d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'):'';}}
 function send(){{
-    window.parent.postMessage({{type:"streamlit:setComponentValue",value:JSON.stringify({{start:state.start,end:state.end}})}},"*");
+    var s=fpStart.selectedDates[0];var e=fpEnd.selectedDates[0];
+    window.parent.postMessage({{type:"streamlit:setComponentValue",value:JSON.stringify({{start:s?fmt(s):"{sd}",end:e?fmt(e):"{ed}"}})}},"*");
 }}
-var fp = flatpickr("#cal",{{
-    inline:true,locale:"zh",dateFormat:"Y-m-d",defaultDate:state.start,
-    disable:[function(d){{return !isTrading(d);}}],
-    onChange:function(sel,ds){{state[state.active]=ds;document.getElementById('dt_'+state.active).value=ds;send();}}
-}});
-document.getElementById('dt_start').addEventListener('click',function(){{
-    state.active='start';
-    fp.setDate(state.start);
-    document.getElementById('dt_start').classList.add('active');
-    document.getElementById('dt_end').classList.remove('active');
-}});
-document.getElementById('dt_end').addEventListener('click',function(){{
-    state.active='end';
-    fp.setDate(state.end);
-    document.getElementById('dt_end').classList.add('active');
-    document.getElementById('dt_start').classList.remove('active');
-}});
-document.getElementById('dt_start').classList.add('active');
+var fpStart=flatpickr("#cal_start",{{inline:true,locale:"zh",dateFormat:"Y-m-d",defaultDate:"{sd}",disable:[function(d){{return !isTrading(d);}}],onChange:send}});
+var fpEnd=flatpickr("#cal_end",{{inline:true,locale:"zh",dateFormat:"Y-m-d",defaultDate:"{ed}",disable:[function(d){{return !isTrading(d);}}],onChange:send}});
 </script></body></html>"""
 
-    result = components.html(html, height=370, scrolling=False)
+    result = components.html(html, height=400, scrolling=False)
     if result is not None and isinstance(result, str) and result:
         try:
             data = json.loads(result)
