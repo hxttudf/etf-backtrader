@@ -90,25 +90,18 @@ def trading_date_range(start_default: pd.Timestamp, end_default: pd.Timestamp,
 <html><head><meta charset="utf-8">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/airbnb.css">
 <style>
-*{{box-sizing:border-box}}
 body{{margin:0;padding:6px;font-family:sans-serif;background:#fff}}
-.row{{display:flex;gap:8px;margin-bottom:6px}}
-.col{{flex:1;min-width:0;position:relative}}
-.col input{{width:100%;padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;height:30px;background:#fff}}
-.flatpickr-calendar{{animation:none!important;display:none;position:absolute!important;top:36px!important;left:0!important;right:auto!important;bottom:auto!important;z-index:9999!important;box-shadow:0 4px 12px rgba(0,0,0,.15)!important}}
-.flatpickr-calendar.open{{display:block!important}}
-.debug{{font-size:10px;color:red;margin-top:4px}}
+.row{{display:flex;gap:8px}}
+.col{{flex:1;min-width:0}}
+.col input{{width:100%;padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;height:30px}}
 </style></head><body>
 <div class="row">
-<div class="col"><input type="text" id="dt_start" value="{sd}" placeholder="开始日期"></div>
-<div class="col"><input type="text" id="dt_end" value="{ed}" placeholder="结束日期"></div>
+<div class="col"><input type="text" id="dt_start" value="{sd}"></div>
+<div class="col"><input type="text" id="dt_end" value="{ed}"></div>
 </div>
-<div class="debug" id="debug"></div>
 <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
 <script src="https://npmcdn.com/flatpickr/dist/l10n/zh.js"></script>
 <script>
-var dbg=document.getElementById('debug');
-dbg.textContent='fp loaded';
 var tradingSet = new Set({json.dumps(trading_list)});
 function isTrading(d){{
     var ds=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
@@ -119,11 +112,11 @@ function send(){{
     var s=fpStart.selectedDates[0],e=fpEnd.selectedDates[0];
     window.parent.postMessage({{type:"streamlit:setComponentValue",value:JSON.stringify({{start:s?fmt(s):"{sd}",end:e?fmt(e):"{ed}"}})}},"*");
 }}
-var fpStart=flatpickr("#dt_start",{{locale:"zh",dateFormat:"Y-m-d",defaultDate:"{sd}",disable:[function(d){{return !isTrading(d);}}],onReady:function(){{dbg.textContent+=' S';send();}},onChange:send,onOpen:function(){{dbg.textContent+=' oS';}},onClose:function(){{dbg.textContent+=' cS';}}}});
-var fpEnd=flatpickr("#dt_end",{{locale:"zh",dateFormat:"Y-m-d",defaultDate:"{ed}",disable:[function(d){{return !isTrading(d);}}],onReady:function(){{dbg.textContent+=' E';}},onChange:send,onOpen:function(){{dbg.textContent+=' oE';}},onClose:function(){{dbg.textContent+=' cE';}}}});
+var fpStart=flatpickr("#dt_start",{{locale:"zh",dateFormat:"Y-m-d",defaultDate:"{sd}",disable:[function(d){{return !isTrading(d);}}],onChange:send}});
+var fpEnd=flatpickr("#dt_end",{{locale:"zh",dateFormat:"Y-m-d",defaultDate:"{ed}",disable:[function(d){{return !isTrading(d);}}],onChange:send}});
 </script></body></html>"""
 
-    result = components.html(html, height=340, scrolling=False)
+    result = components.html(html, height=360, scrolling=False)
     if result is not None and isinstance(result, str) and result:
         try:
             data = json.loads(result)
