@@ -206,6 +206,7 @@ class MOCRotation(bt.Strategy):
         ('end_date', None),
         ('ma_df', None),
         ('roc_df', None),
+        ('delay', 0),
     )
 
     def __init__(self):
@@ -217,6 +218,8 @@ class MOCRotation(bt.Strategy):
         self._last_trade_bar = -999
         self._ma = self.p.ma_df
         self._roc = self.p.roc_df
+        self._signal_by_bar = {}  # bar index → computed signal
+        self._prev_signal = None  # last computed signal (persists on non-check bars)
 
     def next(self):
         dt = self.datas[0].datetime.datetime(0)
@@ -227,34 +230,42 @@ class MOCRotation(bt.Strategy):
         should_check = (
             self.p.rebalance_mode == 'daily' or dt.weekday() == 4
         )
-        if not should_check:
-            return
+        if should_check:
+            above = {}
+            for d in self.datas:
+                name = d._name
+                if d.openinterest[0] == 0:
+                    continue
+                px = d.close[0]
+                ma_val = self._ma[name].get(dt_ts, np.nan) if self._ma is not None and name in self._ma.columns else np.nan
+                roc_val = self._roc[name].get(dt_ts, np.nan) if self._roc is not None and name in self._roc.columns else np.nan
+                if not np.isnan(ma_val) and px > ma_val and not np.isnan(roc_val):
+                    above[name] = roc_val
+            self._prev_signal = max(above, key=above.get) if above else None
 
-        above = {}
-        for d in self.datas:
-            name = d._name
-            if d.openinterest[0] == 0:
-                continue
-            px = d.close[0]
-            # Look up pre-computed MA/ROC by date (correct alignment)
-            ma_val = self._ma[name].get(dt_ts, np.nan) if self._ma is not None and name in self._ma.columns else np.nan
-            roc_val = self._roc[name].get(dt_ts, np.nan) if self._roc is not None and name in self._roc.columns else np.nan
-            if not np.isnan(ma_val) and px > ma_val and not np.isnan(roc_val):
-                above[name] = roc_val
+        # Store signal for this bar (repeats prev on non-check bars)
+        bar = len(self)
+        self._signal_by_bar[bar] = self._prev_signal
 
-        new_holding = max(above, key=above.get) if above else None
+        # Apply delay: MOC → signal from bar_ts[bar - delay]
+        delay = self.p.delay
+        src_bar = bar - delay
+        effective_signal = self._signal_by_bar.get(src_bar)
 
+        # Record daily signals (current bar ROC + post-execution holding)
         sig_record = {'_dt': dt}
         for d in self.datas:
             name = d._name
             roc_val = self._roc[name].get(dt_ts, np.nan) if self._roc is not None and name in self._roc.columns else np.nan
             sig_record[name] = float(roc_val) if not np.isnan(roc_val) else None
-        sig_record['holding'] = new_holding if above else None
+        sig_record['holding'] = self._holding  # will be updated after trade
         self._daily_signals.append(sig_record)
 
-        if new_holding != self._holding \
-                and len(self) - self._last_trade_bar >= self.p.min_hold:
-            _execute_trade(self, dt, new_holding)
+        if effective_signal is not None and effective_signal != self._holding \
+                and bar - self._last_trade_bar >= self.p.min_hold:
+            _execute_trade(self, dt, effective_signal)
+            # Update sig_record holding to post-trade state
+            sig_record['holding'] = self._holding
 
 
 class MOORotation(bt.Strategy):
@@ -275,6 +286,7 @@ class MOORotation(bt.Strategy):
         ('end_date', None),
         ('ma_df', None),
         ('roc_df', None),
+        ('delay', 0),
     )
 
     def __init__(self):
@@ -284,10 +296,11 @@ class MOORotation(bt.Strategy):
         self._trade_log = []
         self._holding = None
         self._last_trade_bar = -999
-        self._pending_signal = None
         self._started_in_range = False
         self._ma = self.p.ma_df
         self._roc = self.p.roc_df
+        self._signal_by_bar = {}  # bar index → computed signal
+        self._prev_signal = None
 
     def next(self):
         dt = self.datas[0].datetime.datetime(0)
@@ -317,9 +330,11 @@ class MOORotation(bt.Strategy):
                 px = d.close[0]
                 if not np.isnan(ma_val) and px > ma_val and not np.isnan(roc_val):
                     above[name] = roc_val
-            self._pending_signal = max(above, key=above.get) if above else None
-        else:
-            self._pending_signal = None
+            self._prev_signal = max(above, key=above.get) if above else None
+
+        # Store signal for this bar (repeats prev on non-check bars)
+        bar = len(self)
+        self._signal_by_bar[bar] = self._prev_signal
 
         sig_record = {'_dt': dt}
         i = len(self) - 1
@@ -327,24 +342,33 @@ class MOORotation(bt.Strategy):
             name = d._name
             roc_val = self._roc[name].iloc[i] if self._roc is not None and name in self._roc.columns else np.nan
             sig_record[name] = float(roc_val) if not np.isnan(roc_val) else None
-        sig_record['holding'] = self._pending_signal
+        sig_record['holding'] = self._holding  # will be updated after trade
         self._daily_signals.append(sig_record)
 
     def next_open(self):
         dt = self.datas[0].datetime.datetime(0)
+        bar = len(self)
+
         # Clean start: skip first bar's stale signal
         if self.p.start_date and not self._started_in_range:
             sd = pd.Timestamp(self.p.start_date)
             ed = pd.Timestamp(self.p.end_date) if self.p.end_date else pd.Timestamp.now()
             if sd <= dt <= ed:
                 self._holding = None
-                self._pending_signal = None
                 self._started_in_range = True
                 return
-        if self._pending_signal != self._holding \
-                and len(self) - self._last_trade_bar >= self.p.min_hold \
-                and self._pending_signal is not None:
-            _execute_trade(self, dt, self._pending_signal)
+
+        # Apply delay: MOO → signal from bar[bar - 1 - delay]
+        delay = self.p.delay
+        src_bar = bar - 1 - delay
+        effective_signal = self._signal_by_bar.get(src_bar)
+
+        if effective_signal is not None and effective_signal != self._holding \
+                and bar - self._last_trade_bar >= self.p.min_hold:
+            _execute_trade(self, dt, effective_signal)
+            # Update sig_record holding to post-trade state
+            if self._daily_signals:
+                self._daily_signals[-1]['holding'] = self._holding
 
 
 class StopLossMomentum(bt.Strategy):
@@ -1093,7 +1117,7 @@ def _convert_output(strat, prices, start_date, end_date, etf_names):
 
 
 def run_backtest_bt(prices, mode, start_date, end_date, ma_days=60, roc_days=25, min_hold=0,
-                    strategy='moc', open_prices=None, exec_mode='moc'):
+                    strategy='moc', open_prices=None, exec_mode='moc', delay=0):
     """回测接口。Backtrader 引擎 — 信号和收益与原手动引擎 100% 一致。
 
     核心设计:
@@ -1127,7 +1151,7 @@ def run_backtest_bt(prices, mode, start_date, end_date, ma_days=60, roc_days=25,
         _fn = _get_manual_bt()
         if _fn:
             return _fn(prices, mode, start_date, end_date, ma_days, roc_days, min_hold,
-                       open_prices=open_prices, delay=0)
+                       open_prices=open_prices, delay=delay)
         raise RuntimeError("Manual run_backtest not available for MOO fallback")
 
     # MOC: Backtrader coc with date-indexed pre-computed MA/ROC. Verified.
@@ -1143,7 +1167,8 @@ def run_backtest_bt(prices, mode, start_date, end_date, ma_days=60, roc_days=25,
 
     strat_cls = MOCRotation if exec_mode == 'moc' else MOORotation
     strat_kwargs = dict(etf_names=etf_names, rebalance_mode=mode, min_hold=min_hold,
-                        ma_df=ma_full, roc_df=roc_full, start_date=None, end_date=None)
+                        ma_df=ma_full, roc_df=roc_full, start_date=None, end_date=None,
+                        delay=delay)
     cerebro.addstrategy(strat_cls, **strat_kwargs)
     results = cerebro.run()
     strat = results[0]

@@ -872,7 +872,7 @@ if run_btn:
                 nav, bnav, ret, bret, trades, trade_dates, trade_details, daily_signals = \
                     run_backtest_bt(prices_full, m, actual_start_str, end_str, ma_days, roc_days,
                                     strategy=bt_mode, open_prices=_exec_open,
-                                    exec_mode=bt_mode)
+                                    exec_mode=bt_mode, delay=delay)
             else:
                 nav, bnav, ret, bret, trades, trade_dates, trade_details, daily_signals = \
                     run_backtest(prices_full, m, actual_start_str, end_str, ma_days, roc_days,
@@ -1226,7 +1226,7 @@ if run_btn:
                     gnav, gbnav, gret, gbret, gtrades, gtd, gtdets, _ = \
                         run_backtest_bt(gprices_full, m, gactual_str, end_str, ma_days, roc_days,
                                         strategy=bt_m, open_prices=gopen_full,
-                                        exec_mode=bt_m)
+                                        exec_mode=bt_m, delay=delay)
                 else:
                     gnav, gbnav, gret, gbret, gtrades, gtd, gtdets, _ = \
                         run_backtest(gprices_full, m, gactual_str, end_str, ma_days, roc_days,
