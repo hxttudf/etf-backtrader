@@ -94,11 +94,12 @@ def trading_date_range(start_default: pd.Timestamp, end_default: pd.Timestamp,
 <script src="https://npmcdn.com/flatpickr/dist/l10n/zh.js"></script>
 <style>
 *{{box-sizing:border-box}}
-body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;padding:6px 0;background:transparent}}
-.row{{display:flex;gap:10px}}
+body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;padding:4px 0;background:transparent}}
+.row{{display:flex;gap:6px}}
 .col{{flex:1;min-width:0}}
-label{{font-size:14px;color:rgb(49,51,63);display:block;margin-bottom:2px}}
-input{{width:100%;padding:6px 8px;border:1px solid #ccc;border-radius:4px;font-size:14px;height:34px}}
+label{{font-size:12px;color:rgb(49,51,63);display:block;margin-bottom:1px}}
+input{{width:100%;padding:4px 6px;border:1px solid #ccc;border-radius:4px;font-size:13px;height:30px}}
+.flatpickr-calendar{{font-size:13px}}
 </style>
 </head><body>
 <div class="row">
@@ -120,13 +121,13 @@ function send(){{
     var ev=e&&e.selectedDates[0]?fmt(e.selectedDates[0]):defaults.end;
     window.parent.postMessage({{type:"streamlit:setComponentValue",value:JSON.stringify({{start:sv,end:ev}})}},"*");
 }}
-function onOpen(){{window.parent.postMessage({{type:"streamlit:setFrameHeight",height:400}},"*");}}
-function onClose(){{window.parent.postMessage({{type:"streamlit:setFrameHeight",height:60}},"*");}}
+function onOpen(){{window.parent.postMessage({{type:"streamlit:setFrameHeight",height:380}},"*");}}
+function onClose(){{window.parent.postMessage({{type:"streamlit:setFrameHeight",height:52}},"*");}}
 var fp1=flatpickr("#dt_start",{{locale:"zh",dateFormat:"Y-m-d",allowInput:false,defaultDate:defaults.start,disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send,onOpen:onOpen,onClose:onClose}});
 var fp2=flatpickr("#dt_end",{{locale:"zh",dateFormat:"Y-m-d",allowInput:false,defaultDate:defaults.end,disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send,onOpen:onOpen,onClose:onClose}});
 </script></body></html>"""
 
-    result = components.html(html, height=60)
+    result = components.html(html, height=52)
     if result is not None and isinstance(result, str) and result:
         try:
             data = json.loads(result)
