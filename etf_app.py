@@ -77,7 +77,8 @@ def get_trading_days() -> set[str]:
 
 def trading_date_range(start_default: pd.Timestamp, end_default: pd.Timestamp,
                        trading_days: set[str]) -> tuple[pd.Timestamp, pd.Timestamp]:
-    """交易日起始/结束日期选择器 — 非 A 股交易日灰色不可选。"""
+    """交易日起始/结束日期选择器 — 非 A 股交易日灰色不可选。
+    iframe 52px 带滚动条，日历弹出时在 iframe 内展开。"""
     sd = start_default.strftime("%Y-%m-%d")
     ed = end_default.strftime("%Y-%m-%d")
     today = pd.Timestamp.now()
@@ -88,37 +89,42 @@ def trading_date_range(start_default: pd.Timestamp, end_default: pd.Timestamp,
 
     html = f"""<!DOCTYPE html>
 <html><head>
-<meta charset="utf-8">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/airbnb.css">
-<style>
-body{{margin:0;padding:4px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#fff}}
-label{{font-size:12px;color:#666;display:block;margin:4px 0 2px 0}}
-input{{display:none}}
-</style>
-</head><body>
-<label>开始日期</label><input type="text" id="dt_start">
-<label>结束日期</label><input type="text" id="dt_end">
-<div id="debug" style="font-size:10px;color:red;margin-top:4px"></div>
 <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
 <script src="https://npmcdn.com/flatpickr/dist/l10n/zh.js"></script>
+<style>
+*{{box-sizing:border-box}}
+body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;padding:4px 0;background:transparent;overflow:visible}}
+.row{{display:flex;gap:6px}}
+.col{{flex:1;min-width:0}}
+label{{font-size:12px;color:rgb(49,51,63);display:block;margin-bottom:1px}}
+input{{width:100%;padding:4px 6px;border:1px solid #ccc;border-radius:4px;font-size:13px;height:30px}}
+</style>
+</head><body>
+<div class="row">
+<div class="col"><label>开始日期</label><input type="text" id="dt_start" autocomplete="off"></div>
+<div class="col"><label>结束日期</label><input type="text" id="dt_end" autocomplete="off"></div>
+</div>
 <script>
-var dbg = document.getElementById('debug');
-dbg.textContent = 'flatpickr v'+flatpickr.version;
 var tradingSet = new Set({json.dumps(trading_list)});
+var defaults = {{start:"{sd}",end:"{ed}"}};
 function isTrading(d){{
-    var ds = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
-    return tradingSet.has(ds);
+    var s = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+    return tradingSet.has(s);
 }}
 function fmt(d){{return d?d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'):'';}}
 function send(){{
-    var st=fpStart.selectedDates[0]; var en=fpEnd.selectedDates[0];
-    window.parent.postMessage({{type:"streamlit:setComponentValue",value:JSON.stringify({{start:st?fmt(st):"{sd}",end:en?fmt(en):"{ed}"}})}},"*");
+    var s=document.getElementById('dt_start')._flatpickr;
+    var e=document.getElementById('dt_end')._flatpickr;
+    var sv=s&&s.selectedDates[0]?fmt(s.selectedDates[0]):defaults.start;
+    var ev=e&&e.selectedDates[0]?fmt(e.selectedDates[0]):defaults.end;
+    window.parent.postMessage({{type:"streamlit:setComponentValue",value:JSON.stringify({{start:sv,end:ev}})}},"*");
 }}
-var fpStart = flatpickr("#dt_start",{{inline:true,locale:"zh",dateFormat:"Y-m-d",defaultDate:"{sd}",disable:[function(d){{return !isTrading(d);}}],onReady:function(){{dbg.textContent+=' startOK';send();}},onChange:send}});
-var fpEnd = flatpickr("#dt_end",{{inline:true,locale:"zh",dateFormat:"Y-m-d",defaultDate:"{ed}",disable:[function(d){{return !isTrading(d);}}],onReady:function(){{dbg.textContent+=' endOK';}},onChange:send}});
+var fp1=flatpickr("#dt_start",{{locale:"zh",dateFormat:"Y-m-d",allowInput:false,defaultDate:defaults.start,disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send}});
+var fp2=flatpickr("#dt_end",{{locale:"zh",dateFormat:"Y-m-d",allowInput:false,defaultDate:defaults.end,disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send}});
 </script></body></html>"""
 
-    result = components.html(html, height=480, scrolling=False)
+    result = components.html(html, height=52, scrolling=True)
     if result is not None and isinstance(result, str) and result:
         try:
             data = json.loads(result)
