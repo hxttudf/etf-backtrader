@@ -77,7 +77,8 @@ def get_trading_days() -> set[str]:
 
 def trading_date_range(start_default: pd.Timestamp, end_default: pd.Timestamp,
                        trading_days: set[str]) -> tuple[pd.Timestamp, pd.Timestamp]:
-    """交易日起始/结束日期选择器 — 非 A 股交易日灰色不可选。"""
+    """交易日起始/结束日期选择器 — 非 A 股交易日灰色不可选。
+    iframe 高度动态伸缩：关闭日历 60px，打开自动扩至 400px。"""
     sd = start_default.strftime("%Y-%m-%d")
     ed = end_default.strftime("%Y-%m-%d")
     today = pd.Timestamp.now()
@@ -119,11 +120,13 @@ function send(){{
     var ev=e&&e.selectedDates[0]?fmt(e.selectedDates[0]):defaults.end;
     window.parent.postMessage({{type:"streamlit:setComponentValue",value:JSON.stringify({{start:sv,end:ev}})}},"*");
 }}
-var fp1=flatpickr("#dt_start",{{locale:"zh",dateFormat:"Y-m-d",allowInput:false,defaultDate:defaults.start,disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send}});
-var fp2=flatpickr("#dt_end",{{locale:"zh",dateFormat:"Y-m-d",allowInput:false,defaultDate:defaults.end,disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send}});
+function onOpen(){{window.parent.postMessage({{type:"streamlit:setFrameHeight",height:400}},"*");}}
+function onClose(){{window.parent.postMessage({{type:"streamlit:setFrameHeight",height:60}},"*");}}
+var fp1=flatpickr("#dt_start",{{locale:"zh",dateFormat:"Y-m-d",allowInput:false,defaultDate:defaults.start,disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send,onOpen:onOpen,onClose:onClose}});
+var fp2=flatpickr("#dt_end",{{locale:"zh",dateFormat:"Y-m-d",allowInput:false,defaultDate:defaults.end,disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send,onOpen:onOpen,onClose:onClose}});
 </script></body></html>"""
 
-    result = components.html(html, height=340)
+    result = components.html(html, height=60)
     if result is not None and isinstance(result, str) and result:
         try:
             data = json.loads(result)
