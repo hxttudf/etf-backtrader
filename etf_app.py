@@ -76,12 +76,11 @@ def get_trading_days() -> set[str]:
     return all_dates
 
 
-def trading_date_input(label: str, default: pd.Timestamp,
-                       trading_days: set[str],
-                       key: str = "") -> pd.Timestamp:
-    """交易日历选择器 — 非 A 股交易日灰色不可选。"""
-    default_str = default.strftime("%Y-%m-%d")
-    # 只传与 flatpickr 相关的交易日（削减 payload）
+def trading_date_range(start_default: pd.Timestamp, end_default: pd.Timestamp,
+                       trading_days: set[str]) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """交易日起始/结束日期选择器 — 非 A 股交易日灰色不可选。两个 flatpickr 合并在单个组件中。"""
+    sd = start_default.strftime("%Y-%m-%d")
+    ed = end_default.strftime("%Y-%m-%d")
     today = pd.Timestamp.now()
     trading_list = sorted(
         d for d in trading_days
@@ -93,62 +92,93 @@ def trading_date_input(label: str, default: pd.Timestamp,
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/airbnb.css">
 <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
 <script src="https://npmcdn.com/flatpickr/dist/l10n/zh.js"></script>
+<style>
+body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;padding:8px 0}}
+.row{{display:flex;gap:12px}}
+.col{{flex:1}}
+label{{font-size:14px;color:rgb(49,51,63);display:block;margin-bottom:4px}}
+input{{width:100%;padding:8px 12px;border:1px solid #ccc;border-radius:4px;font-size:14px;box-sizing:border-box}}
+</style>
 </head><body>
-<div style="margin-bottom:4px;font-size:14px;color:rgb(49,51,63)">{label}</div>
-<input type="text" id="dt_{key}" style="width:100%;padding:8px 12px;border:1px solid #ccc;border-radius:4px;font-size:14px">
+<div class="row">
+<div class="col"><label>开始日期</label><input type="text" id="dt_start"></div>
+<div class="col"><label>结束日期</label><input type="text" id="dt_end"></div>
+</div>
 <script>
 const tradingSet = new Set({json.dumps(trading_list)});
-const key = "{key}";
+const defaults = {{start: "{sd}", end: "{ed}"}};
 
 function isTrading(d) {{
+    if (!d) return false;
     const ds = d.getFullYear() + '-' +
         String(d.getMonth()+1).padStart(2,'0') + '-' +
         String(d.getDate()).padStart(2,'0');
     return tradingSet.has(ds);
 }}
 
-const fp = flatpickr("#dt_{key}", {{
+function toDs(d) {{
+    if (!d) return '';
+    return d.getFullYear() + '-' +
+        String(d.getMonth()+1).padStart(2,'0') + '-' +
+        String(d.getDate()).padStart(2,'0');
+}}
+
+function nearestTrading(d) {{
+    if (!d || isTrading(d)) return d;
+    // walk forward up to 10 days
+    for (let i=1; i<=10; i++) {{
+        const f = new Date(d);
+        f.setDate(f.getDate() + i);
+        if (isTrading(f)) return f;
+    }}
+    // walk backward
+    for (let i=1; i<=10; i++) {{
+        const b = new Date(d);
+        b.setDate(b.getDate() - i);
+        if (isTrading(b)) return b;
+    }}
+    return d;
+}}
+
+function posted() {{
+    const s = document.getElementById('dt_start')._flatpickr;
+    const e = document.getElementById('dt_end')._flatpickr;
+    window.parent.postMessage({{
+        type: "streamlit:setComponentValue",
+        value: JSON.stringify({{start: toDs(s.selectedDates[0]), end: toDs(e.selectedDates[0])}})
+    }}, "*");
+}}
+
+const cfg = {{
     locale: "zh",
     dateFormat: "Y-m-d",
-    defaultDate: "{default_str}",
     allowInput: false,
     disable: [function(d) {{ return !isTrading(d); }}],
-    onReady: function() {{
-        window.parent.postMessage({{
-            type: "streamlit:setComponentValue",
-            value: "{default_str}"
-        }}, "*");
-    }},
-    onChange: function(_, ds) {{
-        window.parent.postMessage({{
-            type: "streamlit:setComponentValue",
-            value: ds
-        }}, "*");
-    }}
-}});
+    monthSelectorStyle: true
+}};
 
-// Listen for Streamlit argument updates (re-render)
-window.addEventListener('message', function(e) {{
-    if (e.data.type === 'streamlit:arguments' && e.data.args) {{
-        const a = e.data.args;
-        if (a.default) fp.setDate(a.default);
-        if (a.trading_list) {{
-            const s = new Set(a.trading_list);
-            fp.set('disable', [function(d) {{
-                const ds = d.getFullYear() + '-' +
-                    String(d.getMonth()+1).padStart(2,'0') + '-' +
-                    String(d.getDate()).padStart(2,'0');
-                return !s.has(ds);
-            }}]);
-        }}
-    }}
+const fpStart = flatpickr("#dt_start", {{
+    ...cfg,
+    defaultDate: defaults.start,
+    onReady: posted,
+    onChange: posted
+}});
+const fpEnd = flatpickr("#dt_end", {{
+    ...cfg,
+    defaultDate: defaults.end,
+    onReady: posted,
+    onChange: posted
 }});
 </script></body></html>"""
 
-    result = components.html(html, height=70, key=f"tdi_{key}")
+    result = components.html(html, height=90)
     if result is not None and isinstance(result, str) and result:
-        return pd.Timestamp(result)
-    return default
+        try:
+            data = json.loads(result)
+            return pd.Timestamp(data["start"]), pd.Timestamp(data["end"])
+        except (json.JSONDecodeError, KeyError):
+            pass
+    return start_default, end_default
 
 
 def _safe_loc(df, col, dt, fallback_prices, i):
@@ -808,12 +838,10 @@ group_names = list(cfg["groups"].keys())
 if sel_group not in group_names:
     sel_group = "红纳创黄C" if "红纳创黄C" in group_names else group_names[0]
 
-start_date = trading_date_input("开始日期",
+start_date, end_date = trading_date_range(
     pd.Timestamp(_qp("start", "2025-04-30")),
-    trading_days, key="start")
-end_date = trading_date_input("结束日期",
     pd.Timestamp(_qp("end", datetime.today().strftime("%Y-%m-%d"))),
-    trading_days, key="end")
+    trading_days)
 mode = st.sidebar.radio("调仓模式", ["daily", "friday", "both"], horizontal=True,
                         index=["daily","friday","both"].index(_qp("mode", "daily")),
                         format_func=lambda x: {"daily": "每日", "friday": "周五", "both": "两者"}[x], key="sb_mode")
