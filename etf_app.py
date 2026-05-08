@@ -77,7 +77,8 @@ def get_trading_days() -> set[str]:
 
 def trading_date_range(start_default: pd.Timestamp, end_default: pd.Timestamp,
                        trading_days: set[str]) -> tuple[pd.Timestamp, pd.Timestamp]:
-    """交易日起始/结束日期选择器 — 非 A 股交易日灰色不可选。"""
+    """交易日起始/结束日期选择器 — 非 A 股交易日灰色不可选。
+    clickOpens=false, focus 时先扩 iframe 再手动 open, 关闭时缩回。"""
     sd = start_default.strftime("%Y-%m-%d")
     ed = end_default.strftime("%Y-%m-%d")
     today = pd.Timestamp.now()
@@ -119,11 +120,20 @@ function send(){{
     var ev=e&&e.selectedDates[0]?fmt(e.selectedDates[0]):defaults.end;
     window.parent.postMessage({{type:"streamlit:setComponentValue",value:JSON.stringify({{start:sv,end:ev}})}},"*");
 }}
-var fp1=flatpickr("#dt_start",{{locale:"zh",dateFormat:"Y-m-d",allowInput:false,defaultDate:defaults.start,disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send}});
-var fp2=flatpickr("#dt_end",{{locale:"zh",dateFormat:"Y-m-d",allowInput:false,defaultDate:defaults.end,disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send}});
+function expandAndOpen(fp){{
+    window.parent.postMessage({{type:"streamlit:setFrameHeight",height:380}},"*");
+    setTimeout(function(){{fp.open();}},120);
+}}
+function shrink(){{
+    window.parent.postMessage({{type:"streamlit:setFrameHeight",height:52}},"*");
+}}
+var fp1=flatpickr("#dt_start",{{locale:"zh",dateFormat:"Y-m-d",allowInput:false,clickOpens:false,defaultDate:defaults.start,disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send,onClose:[shrink]}});
+var fp2=flatpickr("#dt_end",{{locale:"zh",dateFormat:"Y-m-d",allowInput:false,clickOpens:false,defaultDate:defaults.end,disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send,onClose:[shrink]}});
+document.getElementById('dt_start').addEventListener('focus',function(){{expandAndOpen(fp1);}});
+document.getElementById('dt_end').addEventListener('focus',function(){{expandAndOpen(fp2);}});
 </script></body></html>"""
 
-    result = components.html(html, height=340)
+    result = components.html(html, height=52)
     if result is not None and isinstance(result, str) and result:
         try:
             data = json.loads(result)
