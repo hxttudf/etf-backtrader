@@ -93,29 +93,23 @@ def trading_date_range(start_default: pd.Timestamp, end_default: pd.Timestamp,
 <script src="https://npmcdn.com/flatpickr/dist/l10n/zh.js"></script>
 <style>
 *{{box-sizing:border-box}}
-body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;padding:0;background:transparent}}
-.wrap{{padding:4px 4px 0 4px}}
-.wrap:last-child{{padding-bottom:4px}}
-label{{font-size:12px;color:rgb(100,100,100);display:block;margin-bottom:2px;padding-left:2px}}
+body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;padding:4px;background:transparent;min-width:240px}}
+label{{font-size:12px;color:rgb(100,100,100);display:block;margin-bottom:2px}}
 input{{display:none}}
-.flatpickr-calendar.inline{{top:0!important;box-shadow:none!important;width:100%!important;max-width:100%!important}}
-.flatpickr-calendar{{font-size:11px!important;animation:none!important}}
-.flatpickr-innerContainer{{display:flex;width:100%!important}}
-.flatpickr-rContainer{{flex:1;max-width:100%!important}}
-.flatpickr-weekdays{{width:100%!important}}
-.flatpickr-days{{width:100%!important}}
-.dayContainer{{width:100%!important;max-width:100%!important;min-width:100%!important;justify-content:space-around;display:flex}}
-.flatpickr-day{{flex:1;max-width:none!important;height:28px!important;line-height:28px!important}}
-.flatpickr-months .flatpickr-month{{height:28px}}
-.flatpickr-current-month{{font-size:12px!important;padding-top:1px}}
-.flatpickr-weekday{{font-size:10px!important;height:20px!important;line-height:20px!important}}
-.flatpickr-months .flatpickr-prev-month,.flatpickr-months .flatpickr-next-month{{height:26px;padding:4px}}
-.flatpickr-months .flatpickr-prev-month svg,.flatpickr-months .flatpickr-next-month svg{{width:12px;height:12px}}
+.flatpickr-calendar.inline{{top:0!important;box-shadow:none!important;margin:0 auto}}
+.flatpickr-calendar{{font-size:12px!important;animation:none!important}}
+.flatpickr-rContainer{{display:block!important}}
+.flatpickr-day{{max-width:32px!important;height:30px!important;line-height:30px!important}}
+.flatpickr-weekday{{font-size:10px!important;height:22px!important;line-height:22px!important}}
+.flatpickr-current-month{{font-size:13px!important}}
+.flatpickr-months .flatpickr-prev-month svg,.flatpickr-months .flatpickr-next-month svg{{width:14px;height:14px}}
 .flatpickr-day.today{{border-color:#2563eb}}
+hr.divider{{border:none;border-top:1px solid #eee;margin:6px 0}}
 </style>
 </head><body>
-<div class="wrap"><label>开始日期</label><input type="text" id="dt_start"><div id="cal_start"></div></div>
-<div class="wrap"><label>结束日期</label><input type="text" id="dt_end"><div id="cal_end"></div></div>
+<label>开始日期</label><input type="text" id="dt_start"><div id="cal_start"></div>
+<hr class="divider">
+<label>结束日期</label><input type="text" id="dt_end"><div id="cal_end"></div>
 <script>
 var tradingSet = new Set({json.dumps(trading_list)});
 function isTrading(d){{
@@ -131,7 +125,7 @@ var fpStart=flatpickr("#cal_start",{{inline:true,locale:"zh",dateFormat:"Y-m-d",
 var fpEnd=flatpickr("#cal_end",{{inline:true,locale:"zh",dateFormat:"Y-m-d",defaultDate:"{ed}",disable:[function(d){{return !isTrading(d);}}],onChange:send}});
 </script></body></html>"""
 
-    result = components.html(html, height=380, scrolling=False)
+    result = components.html(html, height=420, scrolling=False)
     if result is not None and isinstance(result, str) and result:
         try:
             data = json.loads(result)
