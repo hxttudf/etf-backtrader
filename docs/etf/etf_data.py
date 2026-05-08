@@ -29,10 +29,13 @@ def fetch_one_tencent(code: str, days: int = 800) -> pd.Series:
         data = json.loads(resp.read())
     inner = data["data"][f"{m}{code}"]
     klines = inner.get("qfqday") or inner.get("day") or []
-    rows = [{"日期": k[0], "收盘": float(k[2])} for k in klines]
+    rows = [{"日期": k[0], "开盘": float(k[1]), "收盘": float(k[2])} for k in klines]
     df = pd.DataFrame(rows)
     df["日期"] = pd.to_datetime(df["日期"])
-    return df.set_index("日期")["收盘"]
+    df = df.set_index("日期")
+    close = df["收盘"]
+    close._open = df["开盘"]
+    return close
 
 
 def _fix_splits(s: pd.Series, threshold: float = 0.5) -> pd.Series:
@@ -41,7 +44,7 @@ def _fix_splits(s: pd.Series, threshold: float = 0.5) -> pd.Series:
     threshold=0.5：单日跌幅超50%视为分拆事件，A股真实行情跌幅上限约20%。
     """
     s = s.copy()
-    pct = s.pct_change()
+    pct = s.pct_change(fill_method=None)
     splits = pct[pct < -threshold].index.tolist()
     for split_dt in reversed(splits):
         iloc = s.index.get_loc(split_dt)
@@ -63,7 +66,8 @@ def fetch_one_akshare(code: str, days: int = 0) -> pd.Series:
         try:
             df = ak.fund_etf_hist_sina(symbol=f"{m}{code}")
             df["日期"] = pd.to_datetime(df["date"])
-            sina = df.set_index("日期")["close"].sort_index()
+            sina_close = df.set_index("日期")["close"].sort_index()
+            sina_open = df.set_index("日期")["open"].sort_index()
             break
         except Exception as e:
             if attempt < 2:
@@ -75,17 +79,39 @@ def fetch_one_akshare(code: str, days: int = 0) -> pd.Series:
 
     tencent = fetch_one_tencent(code)
     tencent_start = tencent.index[0]
-    sina_early = sina[sina.index < tencent_start]
-    if len(sina_early) == 0:
-        return tencent
+    sina_early_close = sina_close[sina_close.index < tencent_start]
+    sina_early_open = sina_open[sina_open.index < tencent_start]
+    if len(sina_early_close) == 0:
+        # Cache open alongside close (stored by caller)
+        return sina_close  # type: ignore
 
-    overlap = sina.index.intersection(tencent.index)
+    overlap = sina_close.index.intersection(tencent.index)
     if len(overlap) == 0:
-        return tencent
+        return sina_close  # type: ignore
 
-    sina_early_fixed = _fix_splits(sina_early)
-    ratio = (tencent.loc[overlap[:10]] / sina.loc[overlap[:10]]).median()
-    return pd.concat([sina_early_fixed * ratio, tencent]).sort_index()
+    sina_early_close_fixed = _fix_splits(sina_early_close)
+    # Apply the SAME split ratios to open prices (splits are corporate actions,
+    # not price movements — close and open must use identical adjustment factors)
+    close_adj_factor = sina_early_close_fixed / sina_early_close
+    sina_early_open_fixed = sina_early_open * close_adj_factor
+    ratio = (tencent.loc[overlap[:10]] / sina_close.loc[overlap[:10]]).median()
+    # Store open prices as an attribute so caller can retrieve them
+    result_close = pd.concat([sina_early_close_fixed * ratio, tencent]).sort_index()
+    # Build open: Sina early + tencent open (from tencent OHLC data)
+    tencent_open = get_open_from_result(tencent)
+    if tencent_open is None:
+        tencent_open = pd.Series(np.roll(tencent.values, 1), index=tencent.index)
+        tencent_open.iloc[0] = tencent.iloc[0]
+    result_open = pd.concat([sina_early_open_fixed * ratio, tencent_open]).sort_index()
+    result_open = result_open[~result_open.index.duplicated()]
+    # Attach open to result as attribute (hack to avoid changing return type)
+    result_close._open = result_open
+    return result_close
+
+
+def get_open_from_result(result: pd.Series) -> pd.Series | None:
+    """Extract cached open prices from a fetch_one_akshare result, if available."""
+    return getattr(result, '_open', None)
 
 
 def fetch_one_em(code: str, days: int = 0) -> pd.Series:
@@ -93,18 +119,27 @@ def fetch_one_em(code: str, days: int = 0) -> pd.Series:
     import time
     import akshare as ak
 
+    last_error = None
     for attempt in range(3):
         try:
             df = ak.fund_etf_hist_em(symbol=code, adjust="qfq")
             df["日期"] = pd.to_datetime(df["日期"])
-            return df.set_index("日期")["收盘"]
+            df = df.set_index("日期")
+            close = df["收盘"]
+            if "开盘" in df.columns:
+                close._open = df["开盘"]
+            return close
         except Exception as e:
+            last_error = e
             if attempt < 2:
-                wait = (attempt + 1) * 5
-                print(f"  [{code}] EM 拉取失败: {e}, {wait}s 后重试...")
+                wait = (attempt + 1) * 8
+                print(f"  [{code}] EM 拉取失败 (尝试 {attempt+1}/3): {e}, {wait}s 后重试...")
                 time.sleep(wait)
-            else:
-                raise
+
+    raise ConnectionError(
+        f"东方财富数据源不可用（{code}）：{last_error}\n"
+        f"建议：切换到 AKShare(Sina) 或腾讯财经数据源。"
+    ) from last_error
 
 
 # 数据源名称 → 拉取函数
@@ -119,6 +154,10 @@ SOURCES = {
 
 def _cache_path(source: str) -> Path:
     return CACHE_DIR / f"etf_prices_{source}.csv"
+
+
+def _cache_path_open(source: str) -> Path:
+    return CACHE_DIR / f"etf_prices_{source}_open.csv"
 
 
 def _migrate_old_cache() -> bool:
@@ -149,14 +188,62 @@ def load_prices(etfs: dict, group_name: str = "default", source: str = "tencent"
     _migrate_old_cache()
     fetch_fn = SOURCES[source]
     cache_file = _cache_path(source)
-    today = datetime.today().strftime("%Y-%m-%d")
 
     if cache_file.exists():
         cached = pd.read_csv(cache_file, index_col=0, parse_dates=True)
     else:
         cached = pd.DataFrame()
 
-    is_stale = len(cached) == 0 or cached.index[-1].strftime("%Y-%m-%d") != today
+    # 历史数据不可变，仅缓存为空/数据不完整/过期时才重拉。用户可通过UI按钮手动刷新。
+    is_stale = len(cached) == 0
+    if not is_stale and source in ("akshare", "em") and len(cached) > 0:
+        if cached.index[0] > pd.Timestamp("2018-01-01"):
+            is_stale = True
+    if not is_stale and source in ("akshare", "em") and not _cache_path_open(source).exists():
+        is_stale = True
+    # Auto-refresh if cached data is more than 5 calendar days behind (no trading data for a week+)
+    if not is_stale and len(cached) > 0:
+        cache_latest = cached.index[-1]
+        today = pd.Timestamp.now().normalize()
+        if cache_latest < today - pd.Timedelta(days=5):
+            print(f"[{source}] 缓存过期 ({cache_latest.strftime('%Y-%m-%d')})，重新拉取...")
+            is_stale = True
+    # Intraday / post-close refresh for today's data
+    if not is_stale and len(cached) > 0:
+        today = pd.Timestamp.now().normalize()
+        now = pd.Timestamp.now()
+        is_trading_day = now.dayofweek < 5
+        tracked = [c for c in etfs.values() if c in cached.columns]
+
+        if today in cached.index:
+            today_has_nan = bool(tracked) and cached.loc[today, tracked].isna().any() if tracked else False
+            is_trading = is_trading_day and 9 <= now.hour < 15
+
+            if is_trading:
+                # During trading hours: re-fetch if cache file hasn't been updated in 5+ min
+                cache_mtime = pd.Timestamp(cache_file.stat().st_mtime, unit='s')
+                if (now - cache_mtime).total_seconds() > 300:
+                    print(f"[{source}] 交易时段缓存已过{int((now - cache_mtime).total_seconds() / 60)}分钟，重新拉取...")
+                    is_stale = True
+            elif now.hour >= 15:
+                # st_mtime is POSIX UTC, convert to local datetime for hour check
+                from datetime import datetime as dt_mod
+                cache_mtime_local = pd.Timestamp(
+                    dt_mod.fromtimestamp(cache_file.stat().st_mtime))
+                already_refreshed_today = (cache_mtime_local.normalize() == today
+                                           and cache_mtime_local.hour >= 15)
+                if not already_refreshed_today:
+                    was_fetched_intraday = cache_mtime_local.hour < 15
+                    if was_fetched_intraday:
+                        print(f"[{source}] 盘中缓存需刷新为收盘价，重新拉取...")
+                        is_stale = True
+                    elif today_has_nan:
+                        print(f"[{source}] 今日盘中缓存不完整，收盘后重新拉取...")
+                    is_stale = True
+        elif is_trading_day and today > cached.index[-1] and now.hour >= 9:
+            # Today not in cache at all → only fetch after market opens
+            print(f"[{source}] 缺少今日数据，拉取...")
+            is_stale = True
     new_codes = [c for c in set(etfs.values()) if c not in cached.columns]
 
     if is_stale or new_codes:
@@ -168,20 +255,74 @@ def load_prices(etfs: dict, group_name: str = "default", source: str = "tencent"
         label = f"[{source}] 拉取数据..." if is_stale or len(new_codes) == len(codes_to_fetch) else f"[{source}] 拉取新ETF..."
         print(label)
         results = {}
+        open_results = {}
+        failed = []
         for code in codes_to_fetch:
-            results[code] = fetch_fn(code)
-        new_data = pd.DataFrame(results).dropna()
+            try:
+                s = fetch_fn(code)
+                results[code] = s
+                o = get_open_from_result(s)
+                if o is not None:
+                    open_results[code] = o
+            except Exception as e:
+                failed.append((code, str(e)))
+                print(f"  [{code}] 拉取失败，跳过: {e}")
+        if failed:
+            print(f"  ⚠ {len(failed)}/{len(codes_to_fetch)} 个ETF拉取失败: {[c for c, _ in failed]}")
+        if not results:
+            if is_stale and len(cached) > 0:
+                print(f"  ⚠ 数据源 [{source}] 所有ETF拉取失败，继续使用过期缓存 ({cached.index[-1].strftime('%Y-%m-%d')})")
+                print(f"  建议：刷新数据缓存或切换到其他数据源（推荐 AKShare(Sina)）。")
+            else:
+                raise RuntimeError(
+                    f"数据源 [{source}] 所有ETF拉取均失败。"
+                    f"请检查网络连接或切换到其他数据源（推荐 AKShare(Sina)）。"
+                )
+        new_data = pd.DataFrame(results).dropna(how='all')
 
         if is_stale:
-            cached = new_data
+            # merge to preserve today's data if re-fetch didn't return it
+            if len(cached) > 0 and today not in new_data.index and today in cached.index:
+                cached = cached.combine_first(new_data)
+            else:
+                cached = new_data
         else:
             cached = cached.combine_first(new_data)
 
         cached.to_csv(cache_file, encoding="utf-8-sig")
+
+        # Cache open prices separately when available
+        if open_results:
+            open_cache_file = _cache_path_open(source)
+            new_open = pd.DataFrame(open_results).dropna()
+            if open_cache_file.exists():
+                old_open = pd.read_csv(open_cache_file, index_col=0, parse_dates=True)
+                if is_stale:
+                    cached_open = new_open
+                else:
+                    cached_open = old_open.combine_first(new_open)
+            else:
+                cached_open = new_open
+            cached_open.to_csv(open_cache_file, encoding="utf-8-sig")
+
         print(f"[{source}] {len(cached)}天 ({cached.index[0].strftime('%Y-%m-%d')} ~ {cached.index[-1].strftime('%Y-%m-%d')})")
 
     col_map = {code: name for name, code in etfs.items()}
     result = cached[[c for c in col_map if c in cached.columns]].rename(columns=col_map)
+    return result.loc[result.index >= result.first_valid_index()]
+
+
+def load_open_prices(etfs: dict, group_name: str = "default", source: str = "akshare") -> pd.DataFrame | None:
+    """加载开盘价缓存。akshare / em 源支持。无缓存时返回 None。"""
+    open_cache_file = _cache_path_open(source)
+    if not open_cache_file.exists():
+        return None
+    cached_open = pd.read_csv(open_cache_file, index_col=0, parse_dates=True)
+    col_map = {code: name for name, code in etfs.items()}
+    available = [c for c in col_map if c in cached_open.columns]
+    if not available:
+        return None
+    result = cached_open[available].rename(columns=col_map)
     return result.loc[result.index >= result.first_valid_index()]
 
 
@@ -307,6 +448,39 @@ def load_prices_extended(etfs: dict, group_name: str = "default",
     result = result.loc[result.index >= first_valid]
     print(f"  最终范围: {result.index[0].strftime('%Y-%m-%d')} ~ {result.index[-1].strftime('%Y-%m-%d')} ({len(result)}天)")
     return result
+
+
+def load_midday_prices(etfs: dict) -> pd.DataFrame | None:
+    """加载中午收盘价（11:30 60分钟K线收盘价）"""
+    path = CACHE_DIR / "etf_midday_sina.csv"
+    if not path.exists():
+        return None
+    df = pd.read_csv(path, index_col=0, parse_dates=True)
+    available = [name for name in etfs if name in df.columns]
+    if not available:
+        return None
+    return df[available]
+
+
+def load_afternoon_open_prices(etfs: dict) -> pd.DataFrame | None:
+    """加载下午开盘价（14:00 60分钟K线开盘价）"""
+    path = CACHE_DIR / "etf_afternoon_open_sina.csv"
+    if not path.exists():
+        return None
+    df = pd.read_csv(path, index_col=0, parse_dates=True)
+    available = [name for name in etfs if name in df.columns]
+    if not available:
+        return None
+    return df[available]
+
+
+def midday_data_available(etfs: dict) -> bool:
+    """检查中午收盘价数据是否可用于给定ETF组合"""
+    midday = load_midday_prices(etfs)
+    aft = load_afternoon_open_prices(etfs)
+    if midday is None or aft is None:
+        return False
+    return len(midday.columns) >= len(etfs) and len(aft.columns) >= len(etfs)
 
 
 def calc_indicators(prices: pd.DataFrame, ma: int = 60, roc: int = 25):

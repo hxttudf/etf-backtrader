@@ -23,15 +23,38 @@ plt.rcParams["font.sans-serif"] = ["Arial Unicode MS", "Microsoft YaHei", "SimHe
 plt.rcParams["axes.unicode_minus"] = False
 
 from etf_data import DEFAULT_CONFIG, calc_indicators, load_config, load_prices, load_prices_extended
-from etf_backtrader import run_backtest_bt, position_dist_bt
+from etf_backtrader import run_backtest_bt, position_dist_bt, STRATEGIES
 
 COMMISSION = 0.0001  # 万1 per side, 免五
 STAMP_DUTY = 0.0005  # 印花税 0.05%, 卖出时收取
 
 
+def _safe_loc(df, col, dt, fallback_prices, i):
+    """Get df[col].loc[dt] safely, falling back to prev close if dt not in index."""
+    if col is not None and col in df.columns and dt in df.index:
+        v = df[col].loc[dt]
+        if not np.isnan(v):
+            return v
+    # Fallback: use previous close (same as np.roll logic)
+    if i > 0:
+        return fallback_prices[col].iloc[i - 1]
+    return np.nan
+
+
 def run_backtest(prices: pd.DataFrame, mode: str, start_date: str, end_date: str,
-                 ma_days: int = 60, roc_days: int = 25):
-    """mode: 'daily' | 'friday'  → (nav, bench_nav, ret, bench_ret, trades, trade_dates, trade_details)"""
+                 ma_days: int = 60, roc_days: int = 20, min_hold: int = 0,
+                 open_prices: pd.DataFrame | None = None,
+                 midday_prices: pd.DataFrame | None = None,
+                 afternoon_open_prices: pd.DataFrame | None = None,
+                 delay: int = 0):
+    """mode: 'daily' | 'friday'  → (nav, bench_nav, ret, bench_ret, trades, trade_dates, trade_details)
+
+    信号在 T 日收盘判定，T+1 执行。
+    - 无开盘价/中午价: 信号 T日close → 执行 T日close (同日)
+    - 有开盘价: 信号 T日close → 执行 T+1日open
+    - 有中午价+下午开盘价: 中午信号执行 (close[i-1]→midday[i] 上午 + afternoon_open[i]→close[i] 下午)
+    - delay: 信号延迟天数 (0=同日/次日, 1=额外延迟1天)
+    """
     etf_names = list(prices.columns)
     returns = prices.pct_change(fill_method=None)
     ma60, roc20, _ = calc_indicators(prices, ma_days, roc_days)
@@ -42,16 +65,22 @@ def run_backtest(prices: pd.DataFrame, mode: str, start_date: str, end_date: str
     trade_dates: list[pd.Timestamp] = []
     trade_details: list[tuple[pd.Timestamp, str | None, str | None]] = []
     is_friday = prices.index.dayofweek == 4
+    last_trade_i = -999
+    start_ts = pd.Timestamp(start_date)
+    end_ts = pd.Timestamp(end_date)
+    _use_open = open_prices is not None
+    _use_midday = midday_prices is not None and afternoon_open_prices is not None
+    _is_close = not _use_open and not _use_midday
+    _first_bar_in_range = True
+    started_in_range = False
+
+    signal_hist: list = [None] * len(prices)
+    daily_signals: list = []
 
     for i in range(ma_days, len(prices)):
         dt = prices.index[i]
 
-        # Apply return of current holding
-        if holding is not None:
-            r = returns[holding].iloc[i]
-            strat_ret.iloc[i] = r if not np.isnan(r) else 0.0
-
-        # Check if we should rebalance
+        # ── Step 1: compute signal from close[i] ──
         should_check = True if mode == "daily" else is_friday[i]
         if should_check:
             above = {}
@@ -61,38 +90,125 @@ def run_backtest(prices: pd.DataFrame, mode: str, start_date: str, end_date: str
                 roc = roc20[name].iloc[i]
                 if not np.isnan(ma) and px > ma and not np.isnan(roc):
                     above[name] = roc
+            signal_hist[i] = max(above, key=above.get) if above else None
+        else:
+            signal_hist[i] = signal_hist[i - 1] if i > ma_days else None
 
-            new_holding = max(above, key=above.get) if above else None
-            if new_holding != holding:
+        sig_record = {'_dt': dt}
+        for name in etf_names:
+            roc_v = roc20[name].iloc[i]
+            sig_record[name] = float(roc_v) if not np.isnan(roc_v) else None
+        sig_record['holding'] = signal_hist[i] if signal_hist[i] else None
+        daily_signals.append(sig_record)
+
+        # ── Step 2: determine effective signal with delay ──
+        if _is_close:
+            src = i - delay
+        else:
+            src = i - 1 - delay
+        effective_signal = signal_hist[src] if src >= ma_days else None
+
+        # ── Step 3: execute ──
+        skip_first = _first_bar_in_range and not _is_close
+        _first_bar_in_range = False
+        if not skip_first and effective_signal != holding and i - last_trade_i >= min_hold:
+            if _use_midday and i > 0:
+                # Midday execution: morning(old) + afternoon(new)
+                mid_dt = midday_prices.index[midday_prices.index <= dt]
+                aft_dt = afternoon_open_prices.index[afternoon_open_prices.index <= dt]
+                if len(mid_dt) > 0 and len(aft_dt) > 0:
+                    mid_key = mid_dt[-1]
+                    aft_key = aft_dt[-1]
+                    mid_ok = holding is None or (holding in midday_prices.columns and mid_key in midday_prices.index and not np.isnan(midday_prices[holding].loc[mid_key]))
+                    aft_ok = effective_signal is None or (effective_signal in afternoon_open_prices.columns and aft_key in afternoon_open_prices.index and not np.isnan(afternoon_open_prices[effective_signal].loc[aft_key]))
+                    if (holding is None or mid_ok) and (effective_signal is None or aft_ok):
+                        if holding is not None:
+                            prev_close = prices[holding].iloc[i - 1]
+                            mid_px = midday_prices[holding].loc[mid_key]
+                            if not np.isnan(prev_close) and prev_close > 0:
+                                strat_ret.iloc[i] = mid_px / prev_close - 1
+                            strat_ret.iloc[i] -= COMMISSION + STAMP_DUTY
+                        if effective_signal is not None:
+                            strat_ret.iloc[i] -= COMMISSION
+                        new_h = effective_signal
+                        if new_h is not None:
+                            aft_o = afternoon_open_prices[new_h].loc[aft_key]
+                            day_c = prices[new_h].iloc[i]
+                            if not np.isnan(aft_o) and not np.isnan(day_c) and aft_o > 0:
+                                afternoon_ret = day_c / aft_o - 1
+                                strat_ret.iloc[i] = (1 + strat_ret.iloc[i]) * (1 + afternoon_ret) - 1
+                    else:
+                        if holding is not None:
+                            r = returns[holding].iloc[i]
+                            strat_ret.iloc[i] = r if not np.isnan(r) else 0.0
+                            strat_ret.iloc[i] -= COMMISSION + STAMP_DUTY
+                        if effective_signal is not None:
+                            strat_ret.iloc[i] -= COMMISSION
+                else:
+                    if holding is not None:
+                        r = returns[holding].iloc[i]
+                        strat_ret.iloc[i] = r if not np.isnan(r) else 0.0
+                        strat_ret.iloc[i] -= COMMISSION + STAMP_DUTY
+                    if effective_signal is not None:
+                        strat_ret.iloc[i] -= COMMISSION
+            elif _use_open and i > 0:
+                # T+1 open execution: overnight(old) + swap + intraday(new)
+                # Use .loc[dt] (not .iloc[i]) because open_prices may have different row count
                 if holding is not None:
+                    prev_close = prices[holding].iloc[i - 1]
+                    today_open_old = _safe_loc(open_prices, holding, dt, prices, i)
+                    if not np.isnan(prev_close) and not np.isnan(today_open_old) and prev_close > 0:
+                        strat_ret.iloc[i] = today_open_old / prev_close - 1
                     strat_ret.iloc[i] -= COMMISSION + STAMP_DUTY
-                if new_holding is not None:
+                if effective_signal is not None:
                     strat_ret.iloc[i] -= COMMISSION
+                new_h = effective_signal
+                if new_h is not None:
+                    o = _safe_loc(open_prices, new_h, dt, prices, i)
+                    c = prices[new_h].iloc[i]
+                    if not np.isnan(o) and not np.isnan(c) and o > 0:
+                        intraday = c / o - 1
+                        strat_ret.iloc[i] = (1 + strat_ret.iloc[i]) * (1 + intraday) - 1
+            else:
+                # Close-to-close (signal T日close → execute T日close, same day)
+                if holding is not None:
+                    r = returns[holding].iloc[i]
+                    strat_ret.iloc[i] = r if not np.isnan(r) else 0.0
+                    strat_ret.iloc[i] -= COMMISSION + STAMP_DUTY
+                if effective_signal is not None:
+                    strat_ret.iloc[i] -= COMMISSION
+
+            if start_ts <= dt <= end_ts:
                 trades += 1
                 trade_dates.append(dt)
-                trade_details.append((dt, holding, new_holding))
-                holding = new_holding
+                trade_details.append((dt, holding, effective_signal))
+            last_trade_i = i
+            holding = effective_signal
 
-    # Trim to target range
+        elif holding is not None:
+            r = returns[holding].iloc[i]
+            strat_ret.iloc[i] = r if not np.isnan(r) else 0.0
+
+    # Trim returns to target range
     trim = (prices.index >= start_date) & (prices.index <= end_date)
     ret = strat_ret[trim]
     bench_ret = returns[trim].mean(axis=1)
     nav = (1 + ret).cumprod()
     bench_nav = (1 + bench_ret).cumprod()
 
-    return nav, bench_nav, ret, bench_ret, trades, trade_dates, trade_details
+    return nav, bench_nav, ret, bench_ret, trades, trade_dates, trade_details, daily_signals
 
 
 def metrics(nav: pd.Series, ret: pd.Series) -> dict:
     r = ret.dropna()
-    if len(r) < 5:
+    if len(r) < 1:
         return {}
     total = nav.iloc[-1] - 1
-    ann = (1 + total) ** (252 / len(r)) - 1
-    vol = r.std() * np.sqrt(252)
-    sharpe = (ann - 0.03) / vol if vol > 0 else 0
+    ann = (1 + total) ** (252 / max(len(r), 1)) - 1 if total > -1 else total
+    vol = r.std() * np.sqrt(252) if len(r) >= 2 else 0.0
+    sharpe = (ann - 0.03) / vol if vol > 0 else (0.0 if ann <= 0.03 else float('inf'))
     dd = (nav / nav.cummax() - 1).min()
-    calmar = ann / abs(dd) if dd != 0 else 0
+    calmar = ann / abs(dd) if dd != 0 and ann > 0 else 0
     max_loss = (nav - 1).min()
     max_loss_dt = nav.idxmin()
     underwater_days = int((nav < 1).sum())
@@ -103,21 +219,44 @@ def metrics(nav: pd.Series, ret: pd.Series) -> dict:
 
 
 def position_dist(prices: pd.DataFrame, start_date: str, end_date: str, mode: str,
-                  ma_days: int = 60, roc_days: int = 25) -> tuple[dict, dict]:
-    """返回 (持有天数dict, 买入次数dict)"""
+                  ma_days: int = 60, roc_days: int = 20, min_hold: int = 0) -> tuple[dict, dict, dict, dict, dict]:
+    """返回 (持有天数dict, 买入次数dict, 收益占比dict, 持有期累计收益dict, 上涨天数占比dict)"""
+    import math
+
     etf_names = list(prices.columns)
     ma60, roc20, _ = calc_indicators(prices, ma_days, roc_days)
+    daily_ret = prices.pct_change(fill_method=None)
     is_friday = prices.index.dayofweek == 4
 
     days = {n: 0 for n in etf_names}
     days["CASH"] = 0
     buys = {n: 0 for n in etf_names}
+    nav = {n: 1.0 for n in etf_names}
+    pos_days = {n: 0 for n in etf_names}
+    hold_days_for_wr = {n: 0 for n in etf_names}
+    log_ret = {n: 0.0 for n in etf_names}
+    log_ret["CASH"] = 0.0
+
     holding = None
+    signal = None
+    last_trade_i = -999
+    start_ts = pd.Timestamp(start_date)
+    end_ts = pd.Timestamp(end_date)
 
     for i in range(ma_days, len(prices)):
         dt = prices.index[i]
-        if dt < pd.Timestamp(start_date) or dt > pd.Timestamp(end_date):
-            continue
+
+        # Execute pending signal
+        if signal != holding:
+            if i - last_trade_i >= min_hold:
+                if start_ts <= dt <= end_ts:
+                    buys[signal] += 1
+                    if holding is not None and holding in log_ret:
+                        log_ret[holding] += math.log(1 - (COMMISSION + STAMP_DUTY))
+                    if signal is not None:
+                        log_ret[signal] += math.log(1 - COMMISSION)
+                last_trade_i = i
+                holding = signal
 
         should_check = True if mode == "daily" else is_friday[i]
         if should_check:
@@ -128,13 +267,37 @@ def position_dist(prices: pd.DataFrame, start_date: str, end_date: str, mode: st
                 roc = roc20[name].iloc[i]
                 if not np.isnan(ma) and px > ma and not np.isnan(roc):
                     above[name] = roc
-            new_holding = max(above, key=above.get) if above else None
-            if new_holding is not None and new_holding != holding:
-                buys[new_holding] += 1
-            holding = new_holding
+            signal = max(above, key=above.get) if above else None
 
-        days[holding or "CASH"] += 1
-    return days, buys
+        if start_ts <= dt <= end_ts:
+            h = holding or "CASH"
+            days[h] += 1
+            if holding is not None:
+                r = daily_ret[holding].iloc[i]
+                if not pd.isna(r):
+                    nav[holding] *= (1 + r)
+                    hold_days_for_wr[holding] += 1
+                    if r > 0:
+                        pos_days[holding] += 1
+                    log_ret[holding] += math.log(1 + r)
+
+    total_log = sum(log_ret.values())
+    contrib = {}
+    for name in etf_names:
+        contrib[name] = log_ret[name] / total_log if abs(total_log) > 1e-12 else 0.0
+    contrib["CASH"] = 0.0
+
+    cum_ret = {}
+    for k in etf_names:
+        cum_ret[k] = nav[k] - 1.0 if days[k] > 0 else 0.0
+    cum_ret["CASH"] = 0.0
+
+    win_rate = {}
+    for k in etf_names:
+        win_rate[k] = pos_days[k] / hold_days_for_wr[k] if hold_days_for_wr[k] > 0 else 0.0
+    win_rate["CASH"] = 0.0
+
+    return days, buys, contrib, cum_ret, win_rate
 
 
 def yearly_returns(ret: pd.Series) -> dict:
@@ -146,31 +309,39 @@ def yearly_returns(ret: pd.Series) -> dict:
     return result
 
 
-def trade_win_rate(ret: pd.Series, trade_dates: list) -> float:
-    """计算交易胜率 = 盈利持仓期数 / 总持仓期数
+def trade_win_rate(ret: pd.Series, trade_details: list, prices: pd.DataFrame) -> float:
+    """Per-trade win rate: each closed position = one observation.
 
-    相邻调仓日之间的累计收益率 > 0 记为一次盈利。
+    Tracks entry price when an ETF is bought, compares to exit price when sold.
+    Standard industry metric — every round-trip trade counts once.
     """
-    if not trade_dates:
+    if not trade_details:
         return 0.0
-    nav = (1 + ret).cumprod()
-    valid = sorted({d for d in trade_dates if d in nav.index})
-    if len(valid) < 1:
-        return 0.0
-    breaks = [ret.index[0]] + valid  # 首个分段起点
-    wins = total = 0
-    for i in range(len(breaks) - 1):
-        seg = nav.loc[breaks[i]:breaks[i + 1]]
-        if len(seg) >= 2:
+    entry_prices: dict[str, float] = {}
+    wins = 0
+    total = 0
+    for dt, sold, bought in trade_details:
+        # Close sold position
+        if sold is not None and sold in entry_prices:
+            exit_px = prices[sold].get(dt, np.nan) if dt in prices.index else np.nan
+            if not np.isnan(exit_px):
+                total += 1
+                if exit_px > entry_prices[sold]:
+                    wins += 1
+            del entry_prices[sold]
+        # Open bought position — record entry price
+        if bought is not None:
+            entry_px = prices[bought].get(dt, np.nan) if dt in prices.index else np.nan
+            if not np.isnan(entry_px):
+                entry_prices[bought] = entry_px
+    # Close remaining open positions at last available date
+    last_dt = ret.index[-1]
+    for etf, entry_px in entry_prices.items():
+        exit_px = prices[etf].get(last_dt, np.nan) if last_dt in prices.index else np.nan
+        if not np.isnan(exit_px):
             total += 1
-            if seg.iloc[-1] / seg.iloc[0] - 1 > 0:
+            if exit_px > entry_px:
                 wins += 1
-    # 最后一段: 末次调仓 → 末尾
-    seg = nav.loc[valid[-1]:]
-    if len(seg) >= 2:
-        total += 1
-        if seg.iloc[-1] / seg.iloc[0] - 1 > 0:
-            wins += 1
     return wins / total if total > 0 else 0.0
 
 
@@ -188,7 +359,7 @@ def plot_result(prices: pd.DataFrame, modes_data: dict, group_name: str, start: 
     nav0 = prices[prices.index >= start].copy()
     etf_navs = {}
     for i, name in enumerate(prices.columns):
-        etf_nav = (1 + nav0[name].pct_change().fillna(0)).cumprod()
+        etf_nav = (1 + nav0[name].pct_change(fill_method=None).fillna(0)).cumprod()
         etf_navs[name] = etf_nav
         color = etf_colors[i % len(etf_colors)]
         code = etf_codes.get(name, "") if etf_codes else ""
@@ -282,7 +453,7 @@ def plot_interactive(groups_data: list[dict], start: str, end: str) -> Path:
         nav0 = prices[prices.index >= start].copy()
         etf_color_map: dict[str, str] = {}
         for i, name in enumerate(prices.columns):
-            etf_nav = (1 + nav0[name].pct_change().fillna(0)).cumprod()
+            etf_nav = (1 + nav0[name].pct_change(fill_method=None).fillna(0)).cumprod()
             code = etf_codes.get(name, "")
             label = f"持有{name} ({code})" if code else f"持有{name}"
             color = etf_colors[i % len(etf_colors)]
@@ -420,11 +591,14 @@ def main() -> None:
     parser.add_argument("--end", default=datetime.today().strftime("%Y-%m-%d"), help="结束日期")
     parser.add_argument("--mode", default="both", choices=["daily", "friday", "both"], help="调仓模式")
     parser.add_argument("--ma", type=int, default=60, help="均线天数 (默认60)")
-    parser.add_argument("--roc", type=int, default=25, help="动量天数 (默认25)")
+    parser.add_argument("--roc", type=int, default=20, help="动量天数 (默认20)")
+    parser.add_argument("--delay", type=int, default=0, help="信号延迟天数 (默认0)")
     parser.add_argument("--config", default=None, help="配置文件路径")
     parser.add_argument("--source", default="tencent", choices=["tencent", "akshare"], help="数据源 (默认tencent)")
     parser.add_argument("--html", action="store_true", help="输出交互式HTML图表（可hover查看调仓ETF）")
     parser.add_argument("--backtrader", action="store_true", default=False, help="使用 backtrader 引擎回测")
+    parser.add_argument("--strategy", "-s", default="momentum", choices=list(STRATEGIES.keys()),
+                        help="策略类型 (默认momentum)")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -462,13 +636,17 @@ def main() -> None:
 
         all_metrics = {}
         for mode in modes:
-            nav, bnav, ret, bret, trades, trade_dates, trade_details = (
-                run_backtest_bt(prices_full, mode, args.start, args.end, args.ma, args.roc)
-                if args.backtrader else
-                run_backtest(prices_full, mode, args.start, args.end, args.ma, args.roc))
+            if args.backtrader:
+                nav, bnav, ret, bret, trades, trade_dates, trade_details, daily_signals = \
+                    run_backtest_bt(prices_full, mode, args.start, args.end, args.ma, args.roc,
+                                    strategy=args.strategy)
+            else:
+                nav, bnav, ret, bret, trades, trade_dates, trade_details, daily_signals = \
+                    run_backtest(prices_full, mode, args.start, args.end, args.ma, args.roc,
+                                 delay=args.delay)
             m = metrics(nav, ret)
             bm = metrics(bnav, bret)
-            all_metrics[mode] = (m, bm, trades, ret, nav, bnav, trade_dates, trade_details)
+            all_metrics[mode] = (m, bm, trades, ret, nav, bnav, trade_dates, trade_details, daily_signals)
 
             print(f"\n-- {mode.upper()} 调仓 --")
             print(f"{'指标':<14} {'策略':>10} {'基准':>10}")
@@ -482,11 +660,11 @@ def main() -> None:
                     print(f"{key:<14} {sv:>10.0f} {bv:>10.0f}")
                 else:
                     print(f"{key:<14} {sv:>9.1%} {bv:>9.1%}")
-            wr = trade_win_rate(ret, trade_dates)
+            wr = trade_win_rate(ret, trade_details, prices_full)
             print(f"{'交易次数':<14} {trades:>10}")
             print(f"{'胜率':<14} {wr:>9.1%}")
 
-            pd_result = (position_dist_bt(prices_full, args.start, args.end, mode, args.ma, args.roc)
+            pd_result = (position_dist_bt(prices_full, args.start, args.end, mode, args.ma, args.roc, strategy=args.strategy)
                          if args.backtrader else
                          position_dist(prices_full, args.start, args.end, mode, args.ma, args.roc))
             pos_days, pos_buys = pd_result[:2]
@@ -502,6 +680,27 @@ def main() -> None:
                 print("  逐年收益:")
                 for y, r in yr.items():
                     print(f"    {y}: {r:>+8.1%}")
+
+            # Daily signal summary
+            if daily_signals:
+                print(f"\n  每日信号摘要 (最近5个调仓日):")
+                trade_signal_dates = sorted({d for d in trade_dates if d >= pd.Timestamp(args.start) and d <= pd.Timestamp(args.end)})
+                recent = trade_signal_dates[-5:]
+                for td in recent:
+                    match = next((s for s in daily_signals if s.get('_dt') == td), None)
+                    if match is None:
+                        # Try to find by date string
+                        for s in daily_signals:
+                            s_dt = s.get('_dt')
+                            if s_dt is not None and str(s_dt)[:10] == str(td)[:10]:
+                                match = s
+                                break
+                    if match:
+                        scores = {k: v for k, v in match.items() if k not in ('holding', '_dt')}
+                        score_str = "  ".join(f"{k}: {v:+.4f}" if isinstance(v, float) and v is not None else f"{k}: N/A" for k, v in sorted(scores.items()))
+                        print(f"    {str(td)[:10]}  [{match.get('holding', 'CASH')}]  {score_str}")
+                    else:
+                        print(f"    {str(td)[:10]}  (无信号数据)")
 
         # Store group data for combined HTML
         if args.html or len(group_names) > 1:
