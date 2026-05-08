@@ -531,10 +531,8 @@ def _fmt_optimize_table(df: pd.DataFrame) -> None:
             df[c] = df[c].astype(int)
 
 
-def build_plotly_fig(prices, etf_codes, modes_data, start, end, cmp_data=None):
-    """Reuse the same Plotly logic as etf_backtest.plot_interactive but embedded.
-    cmp_data: optional dict of {mode: (nav, bnav, ret, bret, trades, trade_dates, trade_details)}
-    for the min_hold=10 comparison variant."""
+def build_plotly_fig(prices, etf_codes, modes_data, start, end):
+    """Reuse the same Plotly logic as etf_backtest.plot_interactive but embedded."""
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
@@ -588,41 +586,6 @@ def build_plotly_fig(prices, etf_codes, modes_data, start, end, cmp_data=None):
                 hovertemplate=f"水下({mode}) " + "%{customdata[0]} 净值%{y:.3f}<extra></extra>",
                 customdata=ret_customdata,
             ), row=1, col=1)
-
-        # Comparison variant (min_hold=10) — dashed line + trade markers
-        if cmp_data and mode in cmp_data:
-            c_nav, _, _, _, _, _, c_tdets = cmp_data[mode]
-            c_color = cmp_colors.get(mode, "#888")
-            c_cum_ret = c_nav - 1
-            c_customdata = [(d.strftime("%Y-%m-%d"), r) for d, r in zip(c_nav.index, c_cum_ret)]
-            fig.add_trace(go.Scatter(
-                x=c_nav.index, y=c_nav.values, mode="lines",
-                name=f"策略-最小持有10天({mode})",
-                line=dict(color=c_color, width=2.5, dash="dash"),
-                customdata=c_customdata,
-                hovertemplate=f"策略-最小持有10天({mode}) " + "%{customdata[0]} 净值%{y:.3f} 累计%{customdata[1]:+.2%}<extra></extra>",
-            ), row=1, col=1)
-            # Trade markers for comparison
-            if c_tdets:
-                c_valid = [(dt, frm, to) for dt, frm, to in c_tdets if dt in c_nav.index]
-                if c_valid:
-                    c_dates = [dt for dt, _, _ in c_valid]
-                    c_navs = [c_nav.loc[dt] for dt in c_dates]
-                    c_mcolors = [etf_color_map.get(to, "#999") for _, _, to in c_valid]
-                    c_htexts = []
-                    for dt, frm, to in c_valid:
-                        dt_str = dt.strftime("%Y-%m-%d")
-                        if frm is None: c_htexts.append(f"{dt_str} 买入 {to}")
-                        elif to is None: c_htexts.append(f"{dt_str} 卖出 {frm} → 空仓")
-                        else: c_htexts.append(f"{dt_str} 卖出 {frm} → 买入 {to}")
-                    fig.add_trace(go.Scatter(
-                        x=c_dates, y=c_navs, mode="markers",
-                        name=f"调仓-最小持有10天({mode})",
-                        marker=dict(color=c_mcolors, size=8, symbol="triangle-up",
-                                   line=dict(color="white", width=1)),
-                        hovertemplate="%{customdata} 净值%{y:.3f}<extra></extra>",
-                        customdata=c_htexts,
-                    ), row=1, col=1)
 
         # Trade markers
         if trade_details:
@@ -779,8 +742,6 @@ ma_days = st.sidebar.slider("MA 均线天数", 10, 200, int(_qp("ma", "60")), st
 roc_days = st.sidebar.slider("ROC 动量天数", 5, 120, int(_qp("roc", "20")), step=5, key="sb_roc")
 delay = st.sidebar.slider("信号延迟 (天)", 0, 5, int(_qp("delay", "0")), step=1, key="sb_delay",
     help="0=当日收盘出信号即执行(收盘)或T+1开盘执行(开盘)。1=额外延迟1天(旧行为)")
-compare_min_hold = st.sidebar.checkbox("最小持有10天对比", value=_qp("cmp", "0") == "1",
-    help="开启后同时显示 原始策略 vs 最小持有10天 两条曲线")
 compare_all = st.sidebar.checkbox("对比所有组合", value=False,
     help="同时回测所有已配置组合，并排对比关键指标")
 run_btn = st.sidebar.button("🚀 开始回测", type="primary", width='stretch')
@@ -811,7 +772,7 @@ strategy = st.sidebar.selectbox("策略", list(STRATEGIES.keys()),
 st.query_params.update({
     "g": sel_group, "start": str(start_date), "end": str(end_date),
     "mode": mode, "src": source, "ma": str(ma_days), "roc": str(roc_days),
-    "cmp": "1" if compare_min_hold else "0", "stg": strategy,
+    "stg": strategy,
     "delay": str(delay),
 })
 
@@ -925,24 +886,6 @@ if run_btn:
             modes_data[m] = (nav, bnav, trade_dates, trade_details)
             daily_signals_by_mode[m] = daily_signals
 
-        # Comparison: min_hold=10 variant
-        cmp_data = {}
-        if compare_min_hold:
-            for m in modes_to_run:
-                if use_backtrader:
-                    nav2, bnav2, ret2, bret2, trades2, td2, tdets2, _ = \
-                        run_backtest_bt(prices_full, m, actual_start_str, end_str, ma_days, roc_days,
-                                        min_hold=10, strategy=bt_mode, open_prices=_exec_open,
-                                        exec_mode=bt_mode)
-                else:
-                    nav2, bnav2, ret2, bret2, trades2, td2, tdets2, _ = \
-                        run_backtest(prices_full, m, actual_start_str, end_str, ma_days, roc_days, min_hold=10,
-                                     open_prices=_exec_open,
-                                     midday_prices=_midday_prices,
-                                     afternoon_open_prices=_afternoon_open_prices,
-                                     delay=delay)
-                cmp_data[m] = (nav2, bnav2, ret2, bret2, trades2, td2, tdets2)
-
         st.subheader(f"回测结果: {sel_group}  |  {actual_start_str} ~ {end_str}")
 
     # Metrics cards
@@ -1033,44 +976,9 @@ if run_btn:
             yr_badges = [f"` {y}: {r:+.1%} `" for y, r in yr.items()]
             st.markdown("**逐年收益**  " + "  ".join(yr_badges))
 
-    # Comparison: full metrics for min_hold=10 variant
-    if compare_min_hold and cmp_data:
-        st.divider()
-        st.subheader("🔹 最小持有10天", divider="orange")
-        for m in modes_to_run:
-            c_nav, _, c_ret, _, c_trades, c_td, c_tdets = cmp_data[m]
-            c_mm = calc_metrics(c_nav, c_ret)
-            c_wr = trade_win_rate(c_ret, c_tdets, prices_full)
-            c_buys = sum(1 for t in c_tdets if t[2] is not None)
-            c_sells = sum(1 for t in c_tdets if t[1] is not None)
-            st.markdown(f"**{m.upper()} 调仓**")
-            render_metrics(c_mm, c_trades, c_wr, c_buys, c_sells, metric_keys)
-            # Position distribution for comparison
-            pos_fn = position_dist_bt if use_backtrader else position_dist
-            c_pos_args = (prices_full, actual_start_str, end_str, m, ma_days, roc_days)
-            c_pos_kwargs = dict(min_hold=10)
-            if use_backtrader:
-                c_pos_kwargs['strategy'] = strategy
-                c_pos_kwargs['open_prices'] = _exec_open
-            c_days, c_buys, c_contrib, c_cum, c_wr = pos_fn(*c_pos_args, **c_pos_kwargs)
-            c_total = sum(c_days.values())
-            c_rows = []
-            for k in sorted(c_days.keys(), key=lambda x: -c_days[x]):
-                d = c_days[k]; b = c_buys.get(k, 0)
-                ct = c_contrib.get(k, 0); cr = c_cum.get(k, 0); wr = c_wr.get(k, 0)
-                c_rows.append({"ETF": k, "持有天数": d, "占比": f"{d/c_total:.0%}", "买入次数": b,
-                               "收益占比": f"{ct:+.3%}", "持有期累计收益": f"{cr:+.3%}", "上涨天数占比": f"{wr:.0%}"})
-            st.dataframe(pd.DataFrame(c_rows), hide_index=True, width='content')
-            st.caption("收益占比=各ETF对数收益÷总对数收益(加总=100%) | 持有期累计收益=∏(1+r)-1 | 上涨天数占比=上涨天数÷持有天数")
-            # Yearly returns for comparison
-            c_yr = yearly_returns(c_ret)
-            if len(c_yr) > 1:
-                c_yr_items = [f"` {y}: {r:+.1%} `" for y, r in c_yr.items()]
-                st.markdown("**逐年收益**  " + "  ".join(c_yr_items))
-
     # Plotly chart
     st.plotly_chart(
-        build_plotly_fig(prices_full, etf_codes, modes_data, actual_start_str, end_str, cmp_data if compare_min_hold else None),
+        build_plotly_fig(prices_full, etf_codes, modes_data, actual_start_str, end_str),
         width='stretch',
     )
 
