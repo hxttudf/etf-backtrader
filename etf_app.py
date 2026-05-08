@@ -78,7 +78,7 @@ def get_trading_days() -> set[str]:
 def trading_date_range(start_default: pd.Timestamp, end_default: pd.Timestamp,
                        trading_days: set[str]) -> tuple[pd.Timestamp, pd.Timestamp]:
     """交易日起始/结束日期选择器 — 非 A 股交易日灰色不可选。
-    iframe 52px 带滚动条，日历弹出时在 iframe 内展开。"""
+    使用 Streamlit 标准协议 postMessage(setFrameHeight) 动态扩缩 iframe。"""
     sd = start_default.strftime("%Y-%m-%d")
     ed = end_default.strftime("%Y-%m-%d")
     today = pd.Timestamp.now()
@@ -94,7 +94,7 @@ def trading_date_range(start_default: pd.Timestamp, end_default: pd.Timestamp,
 <script src="https://npmcdn.com/flatpickr/dist/l10n/zh.js"></script>
 <style>
 *{{box-sizing:border-box}}
-body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;padding:4px 0;background:transparent;overflow:visible}}
+body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;padding:4px 0;background:transparent}}
 .row{{display:flex;gap:6px}}
 .col{{flex:1;min-width:0}}
 label{{font-size:12px;color:rgb(49,51,63);display:block;margin-bottom:1px}}
@@ -106,6 +106,7 @@ input{{width:100%;padding:4px 6px;border:1px solid #ccc;border-radius:4px;font-s
 <div class="col"><label>结束日期</label><input type="text" id="dt_end" autocomplete="off"></div>
 </div>
 <script>
+function post(key, data){{window.parent.postMessage(Object.assign({{isStreamlitMessage:true}},data,{{type:key}}),"*");}}
 var tradingSet = new Set({json.dumps(trading_list)});
 var defaults = {{start:"{sd}",end:"{ed}"}};
 function isTrading(d){{
@@ -118,10 +119,12 @@ function send(){{
     var e=document.getElementById('dt_end')._flatpickr;
     var sv=s&&s.selectedDates[0]?fmt(s.selectedDates[0]):defaults.start;
     var ev=e&&e.selectedDates[0]?fmt(e.selectedDates[0]):defaults.end;
-    window.parent.postMessage({{type:"streamlit:setComponentValue",value:JSON.stringify({{start:sv,end:ev}})}},"*");
+    post("streamlit:setComponentValue",{{value:JSON.stringify({{start:sv,end:ev}})}});
 }}
-var fp1=flatpickr("#dt_start",{{locale:"zh",dateFormat:"Y-m-d",allowInput:false,defaultDate:defaults.start,disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send}});
-var fp2=flatpickr("#dt_end",{{locale:"zh",dateFormat:"Y-m-d",allowInput:false,defaultDate:defaults.end,disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send}});
+var fp1=flatpickr("#dt_start",{{locale:"zh",dateFormat:"Y-m-d",allowInput:false,clickOpens:false,defaultDate:defaults.start,disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send,onClose:[function(){{post("streamlit:setFrameHeight",{{height:52}});}}]}});
+var fp2=flatpickr("#dt_end",{{locale:"zh",dateFormat:"Y-m-d",allowInput:false,clickOpens:false,defaultDate:defaults.end,disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send,onClose:[function(){{post("streamlit:setFrameHeight",{{height:52}});}}]}});
+document.getElementById('dt_start').addEventListener('focus',function(){{post("streamlit:setFrameHeight",{{height:380}});setTimeout(function(){{fp1.open();}},100);}});
+document.getElementById('dt_end').addEventListener('focus',function(){{post("streamlit:setFrameHeight",{{height:380}});setTimeout(function(){{fp2.open();}},100);}});
 </script></body></html>"""
 
     result = components.html(html, height=52, scrolling=True)
