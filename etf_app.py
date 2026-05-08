@@ -77,8 +77,7 @@ def get_trading_days() -> set[str]:
 
 def trading_date_range(start_default: pd.Timestamp, end_default: pd.Timestamp,
                        trading_days: set[str]) -> tuple[pd.Timestamp, pd.Timestamp]:
-    """交易日起始/结束日期选择器 — 非 A 股交易日灰色不可选。
-    iframe 高度动态伸缩：关闭日历 60px，打开自动扩至 400px。"""
+    """交易日起始/结束日期选择器 — 非 A 股交易日灰色不可选。"""
     sd = start_default.strftime("%Y-%m-%d")
     ed = end_default.strftime("%Y-%m-%d")
     today = pd.Timestamp.now()
@@ -99,7 +98,6 @@ body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;padding:4
 .col{{flex:1;min-width:0}}
 label{{font-size:12px;color:rgb(49,51,63);display:block;margin-bottom:1px}}
 input{{width:100%;padding:4px 6px;border:1px solid #ccc;border-radius:4px;font-size:13px;height:30px}}
-.flatpickr-calendar{{font-size:13px}}
 </style>
 </head><body>
 <div class="row">
@@ -121,13 +119,11 @@ function send(){{
     var ev=e&&e.selectedDates[0]?fmt(e.selectedDates[0]):defaults.end;
     window.parent.postMessage({{type:"streamlit:setComponentValue",value:JSON.stringify({{start:sv,end:ev}})}},"*");
 }}
-function onOpen(){{window.parent.postMessage({{type:"streamlit:setFrameHeight",height:380}},"*");}}
-function onClose(){{window.parent.postMessage({{type:"streamlit:setFrameHeight",height:52}},"*");}}
-var fp1=flatpickr("#dt_start",{{locale:"zh",dateFormat:"Y-m-d",allowInput:false,defaultDate:defaults.start,disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send,onOpen:onOpen,onClose:onClose}});
-var fp2=flatpickr("#dt_end",{{locale:"zh",dateFormat:"Y-m-d",allowInput:false,defaultDate:defaults.end,disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send,onOpen:onOpen,onClose:onClose}});
+var fp1=flatpickr("#dt_start",{{locale:"zh",dateFormat:"Y-m-d",allowInput:false,defaultDate:defaults.start,disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send}});
+var fp2=flatpickr("#dt_end",{{locale:"zh",dateFormat:"Y-m-d",allowInput:false,defaultDate:defaults.end,disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send}});
 </script></body></html>"""
 
-    result = components.html(html, height=52)
+    result = components.html(html, height=340)
     if result is not None and isinstance(result, str) and result:
         try:
             data = json.loads(result)
