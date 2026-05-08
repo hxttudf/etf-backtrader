@@ -78,7 +78,7 @@ def get_trading_days() -> set[str]:
 def trading_date_range(start_default: pd.Timestamp, end_default: pd.Timestamp,
                        trading_days: set[str]) -> tuple[pd.Timestamp, pd.Timestamp]:
     """交易日起始/结束日期选择器 — 非 A 股交易日灰色不可选。
-    使用 Streamlit 标准协议 postMessage(setFrameHeight) 动态扩缩 iframe。"""
+    单 inline 日历，点击输入框切换控制开始/结束日期。"""
     sd = start_default.strftime("%Y-%m-%d")
     ed = end_default.strftime("%Y-%m-%d")
     today = pd.Timestamp.now()
@@ -94,40 +94,50 @@ def trading_date_range(start_default: pd.Timestamp, end_default: pd.Timestamp,
 <script src="https://npmcdn.com/flatpickr/dist/l10n/zh.js"></script>
 <style>
 *{{box-sizing:border-box}}
-body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;padding:4px 0;background:transparent}}
-.row{{display:flex;gap:6px}}
-.col{{flex:1;min-width:0}}
-label{{font-size:12px;color:rgb(49,51,63);display:block;margin-bottom:1px}}
-input{{width:100%;padding:4px 6px;border:1px solid #ccc;border-radius:4px;font-size:13px;height:30px}}
+body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;padding:4px;background:transparent}}
+.row{{display:flex;gap:6px;margin-bottom:4px}}
+.col{{flex:1}}
+.col input{{width:100%;padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;height:30px;cursor:pointer;background:#fff}}
+.col input.active{{border-color:#2563eb;box-shadow:0 0 0 1px #2563eb}}
+.cal-wrap{{display:flex;justify-content:center}}
 </style>
 </head><body>
 <div class="row">
-<div class="col"><label>开始日期</label><input type="text" id="dt_start" autocomplete="off"></div>
-<div class="col"><label>结束日期</label><input type="text" id="dt_end" autocomplete="off"></div>
+<div class="col"><input type="text" id="dt_start" value="{sd}" readonly></div>
+<div class="col"><input type="text" id="dt_end" value="{ed}" readonly></div>
 </div>
+<div class="cal-wrap"><div id="cal"></div></div>
 <script>
-function post(key, data){{window.parent.postMessage(Object.assign({{isStreamlitMessage:true}},data,{{type:key}}),"*");}}
 var tradingSet = new Set({json.dumps(trading_list)});
-var defaults = {{start:"{sd}",end:"{ed}"}};
+var state = {{start:"{sd}",end:"{ed}",active:"start"}};
 function isTrading(d){{
     var s = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
     return tradingSet.has(s);
 }}
-function fmt(d){{return d?d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'):'';}}
 function send(){{
-    var s=document.getElementById('dt_start')._flatpickr;
-    var e=document.getElementById('dt_end')._flatpickr;
-    var sv=s&&s.selectedDates[0]?fmt(s.selectedDates[0]):defaults.start;
-    var ev=e&&e.selectedDates[0]?fmt(e.selectedDates[0]):defaults.end;
-    post("streamlit:setComponentValue",{{value:JSON.stringify({{start:sv,end:ev}})}});
+    window.parent.postMessage({{type:"streamlit:setComponentValue",value:JSON.stringify({{start:state.start,end:state.end}})}},"*");
 }}
-var fp1=flatpickr("#dt_start",{{locale:"zh",dateFormat:"Y-m-d",allowInput:false,clickOpens:false,defaultDate:defaults.start,disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send,onClose:[function(){{post("streamlit:setFrameHeight",{{height:52}});}}]}});
-var fp2=flatpickr("#dt_end",{{locale:"zh",dateFormat:"Y-m-d",allowInput:false,clickOpens:false,defaultDate:defaults.end,disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send,onClose:[function(){{post("streamlit:setFrameHeight",{{height:52}});}}]}});
-document.getElementById('dt_start').addEventListener('focus',function(){{post("streamlit:setFrameHeight",{{height:380}});setTimeout(function(){{fp1.open();}},100);}});
-document.getElementById('dt_end').addEventListener('focus',function(){{post("streamlit:setFrameHeight",{{height:380}});setTimeout(function(){{fp2.open();}},100);}});
+var fp = flatpickr("#cal",{{
+    inline:true,locale:"zh",dateFormat:"Y-m-d",defaultDate:state.start,
+    disable:[function(d){{return !isTrading(d);}}],
+    onChange:function(sel,ds){{state[state.active]=ds;document.getElementById('dt_'+state.active).value=ds;send();}}
+}});
+document.getElementById('dt_start').addEventListener('click',function(){{
+    state.active='start';
+    fp.setDate(state.start);
+    document.getElementById('dt_start').classList.add('active');
+    document.getElementById('dt_end').classList.remove('active');
+}});
+document.getElementById('dt_end').addEventListener('click',function(){{
+    state.active='end';
+    fp.setDate(state.end);
+    document.getElementById('dt_end').classList.add('active');
+    document.getElementById('dt_start').classList.remove('active');
+}});
+document.getElementById('dt_start').classList.add('active');
 </script></body></html>"""
 
-    result = components.html(html, height=52, scrolling=True)
+    result = components.html(html, height=370, scrolling=False)
     if result is not None and isinstance(result, str) and result:
         try:
             data = json.loads(result)
