@@ -735,10 +735,23 @@ group_names = list(cfg["groups"].keys())
 if sel_group not in group_names:
     sel_group = "红纳创黄C" if "红纳创黄C" in group_names else group_names[0]
 
-start_date, end_date = trading_date_range(
-    pd.Timestamp(_qp("start", "2025-04-30")),
-    pd.Timestamp(_qp("end", datetime.today().strftime("%Y-%m-%d"))),
-    trading_days)
+_start_val = pd.Timestamp(_qp("start", "2025-04-30"))
+_end_val = pd.Timestamp(_qp("end", datetime.today().strftime("%Y-%m-%d")))
+_available = [_dt.date.fromisoformat(d) for d in sorted(trading_days)]
+
+start_date = date_picker(
+    picker_type=PickerType.date,
+    value=_dt.datetime.combine(_start_val.date(), _dt.time.min),
+    available_dates=_available,
+    key="sb_start")
+start_date = pd.Timestamp(start_date)
+
+end_date = date_picker(
+    picker_type=PickerType.date,
+    value=_dt.datetime.combine(_end_val.date(), _dt.time.min),
+    available_dates=_available,
+    key="sb_end")
+end_date = pd.Timestamp(end_date)
 mode = st.sidebar.radio("调仓模式", ["daily", "friday", "both"], horizontal=True,
                         index=["daily","friday","both"].index(_qp("mode", "daily")),
                         format_func=lambda x: {"daily": "每日", "friday": "周五", "both": "两者"}[x], key="sb_mode")
