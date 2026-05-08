@@ -120,7 +120,7 @@ function send(){{
     var ev=e&&e.selectedDates[0]?fmt(e.selectedDates[0]):"{ed}";
     window.parent.postMessage({{type:"streamlit:setComponentValue",value:JSON.stringify({{start:sv,end:ev}})}},"*");
 }}
-var fpStart=flatpickr("#dt_start",{{locale:"zh",dateFormat:"Y-m-d",defaultDate:"{sd}",disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send}});
+var fpStart=flatpickr("#dt_start",{{locale:"zh",dateFormat:"Y-m-d",defaultDate:"{sd}",disable:[function(d){{return !isTrading(d);}}],position:"above",position:"above",onReady:send,onChange:send}});
 var fpEnd=flatpickr("#dt_end",{{locale:"zh",dateFormat:"Y-m-d",defaultDate:"{ed}",disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send}});
 </script></body></html>"""
 
