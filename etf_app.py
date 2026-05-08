@@ -15,7 +15,6 @@ import math
 import numpy as np
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 
 # Ensure the script dir is on sys.path so imports work both in dev and PyInstaller
 sys.path.insert(0, str(Path(__file__).parent))
@@ -24,6 +23,8 @@ from etf_data import (DEFAULT_CONFIG, calc_indicators, load_config, load_prices,
                         load_open_prices, load_midday_prices, load_afternoon_open_prices,
                         midday_data_available)
 from etf_backtrader import run_backtest_bt, position_dist_bt, STRATEGIES
+from streamlit_date_picker import date_picker, PickerType
+import datetime as _dt
 
 st.set_page_config(page_title="ETF双动量轮动", layout="wide")
 
@@ -75,55 +76,6 @@ def get_trading_days() -> set[str]:
     return all_dates
 
 
-def trading_date_range(start_default: pd.Timestamp, end_default: pd.Timestamp,
-                       trading_days: set[str]) -> tuple[pd.Timestamp, pd.Timestamp]:
-    """交易日起始/结束日期选择器 — 非 A 股交易日灰色不可选。"""
-    sd = start_default.strftime("%Y-%m-%d")
-    ed = end_default.strftime("%Y-%m-%d")
-    today = pd.Timestamp.now()
-    trading_list = sorted(
-        d for d in trading_days
-        if d >= "2005-01-01" and d <= (today + pd.Timedelta(days=365 * 3)).strftime("%Y-%m-%d")
-    )
-
-    html = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/airbnb.css">
-<script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
-<script src="https://npmcdn.com/flatpickr/dist/l10n/zh.js"></script>
-<style>
-body{{margin:0;padding:4px;font-family:sans-serif;background:#fff}}
-.row{{display:flex;gap:6px}}
-.col{{flex:1;min-width:0}}
-.col input{{width:100%;padding:4px 6px;border:1px solid #ccc;border-radius:4px;font-size:13px;height:28px;box-sizing:border-box}}
-</style></head><body>
-<div class="row">
-<div class="col"><input type="text" id="dt_start" value="{sd}" placeholder="开始日期"></div>
-<div class="col"><input type="text" id="dt_end" value="{ed}" placeholder="结束日期"></div>
-</div>
-<script>
-var tradingSet = new Set({json.dumps(trading_list)});
-function isTrading(d){{
-    var ds=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
-    return tradingSet.has(ds);
-}}
-function fmt(d){{return d?d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'):'';}}
-function send(){{
-    var s=fpStart.selectedDates[0],e=fpEnd.selectedDates[0];
-    window.parent.postMessage({{type:"streamlit:setComponentValue",value:JSON.stringify({{start:s?fmt(s):"{sd}",end:e?fmt(e):"{ed}"}})}},"*");
-}}
-var fpStart=flatpickr("#dt_start",{{locale:"zh",dateFormat:"Y-m-d",defaultDate:"{sd}",disable:[function(d){{return !isTrading(d);}}],onChange:send}});
-var fpEnd=flatpickr("#dt_end",{{locale:"zh",dateFormat:"Y-m-d",defaultDate:"{ed}",disable:[function(d){{return !isTrading(d);}}],onChange:send}});
-</script></body></html>"""
-
-    result = components.html(html, height=430, scrolling=False)
-    if result is not None and isinstance(result, str) and result:
-        try:
-            data = json.loads(result)
-            return pd.Timestamp(data["start"]), pd.Timestamp(data["end"])
-        except (json.JSONDecodeError, KeyError):
-            pass
-    return start_default, end_default
 
 
 def _safe_loc(df, col, dt, fallback_prices, i):
