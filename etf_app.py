@@ -88,36 +88,37 @@ def trading_date_range(start_default: pd.Timestamp, end_default: pd.Timestamp,
 
     html = f"""<!DOCTYPE html>
 <html><head>
+<meta charset="utf-8">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/airbnb.css">
+<style>
+body{{margin:0;padding:4px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#fff}}
+label{{font-size:12px;color:#666;display:block;margin:4px 0 2px 0}}
+input{{display:none}}
+</style>
+</head><body>
+<label>开始日期</label><input type="text" id="dt_start">
+<label>结束日期</label><input type="text" id="dt_end">
+<div id="debug" style="font-size:10px;color:red;margin-top:4px"></div>
 <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
 <script src="https://npmcdn.com/flatpickr/dist/l10n/zh.js"></script>
-</head><body style="margin:0;padding:6px;font-family:sans-serif;background:#fff">
-<div id="cal_start"></div>
-<div style="height:4px"></div>
-<div id="cal_end"></div>
-<div id="status" style="font-size:10px;color:red;margin-top:4px"></div>
 <script>
-var s = document.getElementById('status');
-if (typeof flatpickr === 'undefined') {{
-    s.textContent = 'flatpickr failed to load';
-}} else {{
-    s.textContent = 'flatpickr loaded OK';
-    var tradingSet = new Set({json.dumps(trading_list)});
-    function isTrading(d){{
-        var ds = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
-        return tradingSet.has(ds);
-    }}
-    function fmt(d){{return d?d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'):'';}}
-    function send(){{
-        var st=fpStart.selectedDates[0]; var en=fpEnd.selectedDates[0];
-        window.parent.postMessage({{type:"streamlit:setComponentValue",value:JSON.stringify({{start:st?fmt(st):"{sd}",end:en?fmt(en):"{ed}"}})}},"*");
-    }}
-    var fpStart = flatpickr("#cal_start",{{inline:true,locale:"zh",dateFormat:"Y-m-d",defaultDate:"{sd}",disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send}});
-    var fpEnd = flatpickr("#cal_end",{{inline:true,locale:"zh",dateFormat:"Y-m-d",defaultDate:"{ed}",disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send}});
+var dbg = document.getElementById('debug');
+dbg.textContent = 'flatpickr v'+flatpickr.version;
+var tradingSet = new Set({json.dumps(trading_list)});
+function isTrading(d){{
+    var ds = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+    return tradingSet.has(ds);
 }}
+function fmt(d){{return d?d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'):'';}}
+function send(){{
+    var st=fpStart.selectedDates[0]; var en=fpEnd.selectedDates[0];
+    window.parent.postMessage({{type:"streamlit:setComponentValue",value:JSON.stringify({{start:st?fmt(st):"{sd}",end:en?fmt(en):"{ed}"}})}},"*");
+}}
+var fpStart = flatpickr("#dt_start",{{inline:true,locale:"zh",dateFormat:"Y-m-d",defaultDate:"{sd}",disable:[function(d){{return !isTrading(d);}}],onReady:function(){{dbg.textContent+=' startOK';send();}},onChange:send}});
+var fpEnd = flatpickr("#dt_end",{{inline:true,locale:"zh",dateFormat:"Y-m-d",defaultDate:"{ed}",disable:[function(d){{return !isTrading(d);}}],onReady:function(){{dbg.textContent+=' endOK';}},onChange:send}});
 </script></body></html>"""
 
-    result = components.html(html, height=520, scrolling=False)
+    result = components.html(html, height=480, scrolling=False)
     if result is not None and isinstance(result, str) and result:
         try:
             data = json.loads(result)
