@@ -26,7 +26,6 @@ from etf_data import (DEFAULT_CONFIG, calc_indicators, load_config, load_prices,
 from etf_backtrader import run_backtest_bt, position_dist_bt, STRATEGIES
 
 st.set_page_config(page_title="ETF双动量轮动", layout="wide")
-st.title("ETF 双动量轮动")
 
 st.markdown("""
 <style>
@@ -78,7 +77,7 @@ def get_trading_days() -> set[str]:
 
 def trading_date_range(start_default: pd.Timestamp, end_default: pd.Timestamp,
                        trading_days: set[str]) -> tuple[pd.Timestamp, pd.Timestamp]:
-    """交易日起始/结束日期选择器 — 非 A 股交易日灰色不可选。两个 flatpickr 合并在单个组件中。"""
+    """交易日起始/结束日期选择器 — 非 A 股交易日灰色不可选。"""
     sd = start_default.strftime("%Y-%m-%d")
     ed = end_default.strftime("%Y-%m-%d")
     today = pd.Timestamp.now()
@@ -93,85 +92,38 @@ def trading_date_range(start_default: pd.Timestamp, end_default: pd.Timestamp,
 <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
 <script src="https://npmcdn.com/flatpickr/dist/l10n/zh.js"></script>
 <style>
-body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;padding:8px 0}}
-.row{{display:flex;gap:12px}}
-.col{{flex:1}}
-label{{font-size:14px;color:rgb(49,51,63);display:block;margin-bottom:4px}}
-input{{width:100%;padding:8px 12px;border:1px solid #ccc;border-radius:4px;font-size:14px;box-sizing:border-box}}
+*{{box-sizing:border-box}}
+body{{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;padding:6px 0;background:transparent}}
+.row{{display:flex;gap:10px}}
+.col{{flex:1;min-width:0}}
+label{{font-size:14px;color:rgb(49,51,63);display:block;margin-bottom:2px}}
+input{{width:100%;padding:6px 8px;border:1px solid #ccc;border-radius:4px;font-size:14px;height:34px}}
 </style>
 </head><body>
 <div class="row">
-<div class="col"><label>开始日期</label><input type="text" id="dt_start"></div>
-<div class="col"><label>结束日期</label><input type="text" id="dt_end"></div>
+<div class="col"><label>开始日期</label><input type="text" id="dt_start" autocomplete="off"></div>
+<div class="col"><label>结束日期</label><input type="text" id="dt_end" autocomplete="off"></div>
 </div>
 <script>
-const tradingSet = new Set({json.dumps(trading_list)});
-const defaults = {{start: "{sd}", end: "{ed}"}};
-
-function isTrading(d) {{
-    if (!d) return false;
-    const ds = d.getFullYear() + '-' +
-        String(d.getMonth()+1).padStart(2,'0') + '-' +
-        String(d.getDate()).padStart(2,'0');
-    return tradingSet.has(ds);
+var tradingSet = new Set({json.dumps(trading_list)});
+var defaults = {{start:"{sd}",end:"{ed}"}};
+function isTrading(d){{
+    var s = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+    return tradingSet.has(s);
 }}
-
-function toDs(d) {{
-    if (!d) return '';
-    return d.getFullYear() + '-' +
-        String(d.getMonth()+1).padStart(2,'0') + '-' +
-        String(d.getDate()).padStart(2,'0');
+function fmt(d){{return d?d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'):'';}}
+function send(){{
+    var s=document.getElementById('dt_start')._flatpickr;
+    var e=document.getElementById('dt_end')._flatpickr;
+    var sv=s&&s.selectedDates[0]?fmt(s.selectedDates[0]):defaults.start;
+    var ev=e&&e.selectedDates[0]?fmt(e.selectedDates[0]):defaults.end;
+    window.parent.postMessage({{type:"streamlit:setComponentValue",value:JSON.stringify({{start:sv,end:ev}})}},"*");
 }}
-
-function nearestTrading(d) {{
-    if (!d || isTrading(d)) return d;
-    // walk forward up to 10 days
-    for (let i=1; i<=10; i++) {{
-        const f = new Date(d);
-        f.setDate(f.getDate() + i);
-        if (isTrading(f)) return f;
-    }}
-    // walk backward
-    for (let i=1; i<=10; i++) {{
-        const b = new Date(d);
-        b.setDate(b.getDate() - i);
-        if (isTrading(b)) return b;
-    }}
-    return d;
-}}
-
-function posted() {{
-    const s = document.getElementById('dt_start')._flatpickr;
-    const e = document.getElementById('dt_end')._flatpickr;
-    window.parent.postMessage({{
-        type: "streamlit:setComponentValue",
-        value: JSON.stringify({{start: toDs(s.selectedDates[0]), end: toDs(e.selectedDates[0])}})
-    }}, "*");
-}}
-
-const cfg = {{
-    locale: "zh",
-    dateFormat: "Y-m-d",
-    allowInput: false,
-    disable: [function(d) {{ return !isTrading(d); }}],
-    monthSelectorStyle: true
-}};
-
-const fpStart = flatpickr("#dt_start", {{
-    ...cfg,
-    defaultDate: defaults.start,
-    onReady: posted,
-    onChange: posted
-}});
-const fpEnd = flatpickr("#dt_end", {{
-    ...cfg,
-    defaultDate: defaults.end,
-    onReady: posted,
-    onChange: posted
-}});
+var fp1=flatpickr("#dt_start",{{locale:"zh",dateFormat:"Y-m-d",allowInput:false,defaultDate:defaults.start,disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send}});
+var fp2=flatpickr("#dt_end",{{locale:"zh",dateFormat:"Y-m-d",allowInput:false,defaultDate:defaults.end,disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send}});
 </script></body></html>"""
 
-    result = components.html(html, height=90)
+    result = components.html(html, height=340)
     if result is not None and isinstance(result, str) and result:
         try:
             data = json.loads(result)
