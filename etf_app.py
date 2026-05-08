@@ -92,30 +92,32 @@ def trading_date_range(start_default: pd.Timestamp, end_default: pd.Timestamp,
 <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
 <script src="https://npmcdn.com/flatpickr/dist/l10n/zh.js"></script>
 </head><body style="margin:0;padding:6px;font-family:sans-serif;background:#fff">
-<div style="margin-bottom:8px">
-  <div style="font-size:12px;color:#666;margin-bottom:2px">开始日期</div>
-  <div id="cal_start"></div>
-</div>
-<div>
-  <div style="font-size:12px;color:#666;margin-bottom:2px">结束日期</div>
-  <div id="cal_end"></div>
-</div>
+<div id="cal_start"></div>
+<div style="height:4px"></div>
+<div id="cal_end"></div>
+<div id="status" style="font-size:10px;color:red;margin-top:4px"></div>
 <script>
-var tradingSet = new Set({json.dumps(trading_list)});
-function isTrading(d){{
-    var s = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
-    return tradingSet.has(s);
+var s = document.getElementById('status');
+if (typeof flatpickr === 'undefined') {{
+    s.textContent = 'flatpickr failed to load';
+}} else {{
+    s.textContent = 'flatpickr loaded OK';
+    var tradingSet = new Set({json.dumps(trading_list)});
+    function isTrading(d){{
+        var ds = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+        return tradingSet.has(ds);
+    }}
+    function fmt(d){{return d?d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'):'';}}
+    function send(){{
+        var st=fpStart.selectedDates[0]; var en=fpEnd.selectedDates[0];
+        window.parent.postMessage({{type:"streamlit:setComponentValue",value:JSON.stringify({{start:st?fmt(st):"{sd}",end:en?fmt(en):"{ed}"}})}},"*");
+    }}
+    var fpStart = flatpickr("#cal_start",{{inline:true,locale:"zh",dateFormat:"Y-m-d",defaultDate:"{sd}",disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send}});
+    var fpEnd = flatpickr("#cal_end",{{inline:true,locale:"zh",dateFormat:"Y-m-d",defaultDate:"{ed}",disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send}});
 }}
-function send(){{
-    var s=fpStart.selectedDates[0]; var e=fpEnd.selectedDates[0];
-    function f(d){{return d?d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'):'';}}
-    window.parent.postMessage({{type:"streamlit:setComponentValue",value:JSON.stringify({{start:s?f(s):"{sd}",end:e?f(e):"{ed}"}})}},"*");
-}}
-var fpStart = flatpickr("#cal_start",{{inline:true,locale:"zh",dateFormat:"Y-m-d",defaultDate:"{sd}",disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send}});
-var fpEnd = flatpickr("#cal_end",{{inline:true,locale:"zh",dateFormat:"Y-m-d",defaultDate:"{ed}",disable:[function(d){{return !isTrading(d);}}],onReady:send,onChange:send}});
 </script></body></html>"""
 
-    result = components.html(html, height=480, scrolling=False)
+    result = components.html(html, height=520, scrolling=False)
     if result is not None and isinstance(result, str) and result:
         try:
             data = json.loads(result)
