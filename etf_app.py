@@ -23,7 +23,6 @@ from etf_data import (DEFAULT_CONFIG, calc_indicators, load_config, load_prices,
                         load_open_prices, load_midday_prices, load_afternoon_open_prices,
                         midday_data_available)
 from etf_backtrader import run_backtest_bt, position_dist_bt, STRATEGIES
-from streamlit_date_picker import date_picker, PickerType
 import datetime as _dt
 
 st.set_page_config(page_title="ETF双动量轮动", layout="wide")
@@ -65,15 +64,6 @@ def cached_prices(etfs: dict, group_name: str, source: str = "tencent") -> pd.Da
 @st.cache_data(ttl=60)
 def cached_open_prices(etfs: dict, group_name: str, source: str = "akshare") -> pd.DataFrame | None:
     return load_open_prices(etfs, group_name, source=source)
-
-
-@st.cache_data(ttl=86400)
-def get_trading_days() -> set[str]:
-    """A 股交易日集合，24h 刷新一次。覆盖 2005 ~ 今年+3 年。"""
-    import akshare as ak
-    df = ak.tool_trade_date_hist_sina()
-    all_dates: set[str] = {d.strftime("%Y-%m-%d") if hasattr(d, 'strftime') else str(d)[:10] for d in df["trade_date"]}
-    return all_dates
 
 
 
@@ -691,9 +681,8 @@ st.sidebar.header("📊 回测参数")
 
 # ── Restore from URL query params (survives browser refresh) ──
 qp = st.query_params
-_qp = lambda k, d: qp[k] if k in qp else d
+_qp = lambda k, d: qp[k] if k in qp and qp[k] not in ("NaT", "") else d
 
-trading_days = get_trading_days()
 
 # Group selector + config button
 col1, col2 = st.sidebar.columns([3, 1])
@@ -737,21 +726,15 @@ if sel_group not in group_names:
 
 _start_val = pd.Timestamp(_qp("start", "2025-04-30"))
 _end_val = pd.Timestamp(_qp("end", datetime.today().strftime("%Y-%m-%d")))
-_available = [_dt.datetime.strptime(d, "%Y-%m-%d") for d in sorted(trading_days)]
 
-start_date = date_picker(
-    picker_type=PickerType.date,
-    value=_dt.datetime.combine(_start_val.date(), _dt.time.min),
-    available_dates=_available,
-    key="sb_start")
-start_date = pd.Timestamp(start_date)
-
-end_date = date_picker(
-    picker_type=PickerType.date,
-    value=_dt.datetime.combine(_end_val.date(), _dt.time.min),
-    available_dates=_available,
-    key="sb_end")
-end_date = pd.Timestamp(end_date)
+st.sidebar.markdown("**回测日期**")
+sb_date_col1, sb_date_col2 = st.sidebar.columns(2)
+with sb_date_col1:
+    start_date = st.date_input("开始", value=_start_val, key="sd_start", format="YYYY-MM-DD")
+    start_date = pd.Timestamp(start_date)
+with sb_date_col2:
+    end_date = st.date_input("结束", value=_end_val, key="sd_end", format="YYYY-MM-DD")
+    end_date = pd.Timestamp(end_date)
 mode = st.sidebar.radio("调仓模式", ["daily", "friday", "both"], horizontal=True,
                         index=["daily","friday","both"].index(_qp("mode", "daily")),
                         format_func=lambda x: {"daily": "每日", "friday": "周五", "both": "两者"}[x], key="sb_mode")
@@ -1193,7 +1176,7 @@ if run_btn:
                 elif isinstance(val, str) and val.startswith("◀"):
                     return 'background-color: #f8d7da; color: #721c24'  # red
                 return ''
-            styled = df_sig.style.applymap(_highlight_prices)
+            styled = df_sig.style.map(_highlight_prices)
             st.dataframe(styled, height=400, hide_index=True, width='stretch')
 
     # ── Compare all groups ────────────────────────────────
