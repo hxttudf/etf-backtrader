@@ -89,18 +89,15 @@ def trading_date_range(start_default: pd.Timestamp, end_default: pd.Timestamp,
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/airbnb.css">
-<style>
-body{{margin:0;padding:6px;font-family:sans-serif;background:#fff}}
-.row{{display:flex;gap:8px}}
-.col{{flex:1;min-width:0}}
-.col input{{width:100%;padding:4px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;height:30px}}
-</style></head><body>
-<div class="row">
-<div class="col"><input type="text" id="dt_start" value="{sd}"></div>
-<div class="col"><input type="text" id="dt_end" value="{ed}"></div>
-</div>
 <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
 <script src="https://npmcdn.com/flatpickr/dist/l10n/zh.js"></script>
+<style>
+body{{margin:0;padding:4px;font-family:sans-serif;background:#fff}}
+input{{width:100%;padding:4px 10px;border:1px solid #ccc;border-radius:4px;font-size:13px;height:30px;box-sizing:border-box}}
+div+input{{margin-top:4px}}
+</style></head><body>
+<input type="text" id="dt_start" value="{sd}" placeholder="开始日期">
+<input type="text" id="dt_end" value="{ed}" placeholder="结束日期">
 <script>
 var tradingSet = new Set({json.dumps(trading_list)});
 function isTrading(d){{
@@ -116,7 +113,7 @@ var fpStart=flatpickr("#dt_start",{{locale:"zh",dateFormat:"Y-m-d",defaultDate:"
 var fpEnd=flatpickr("#dt_end",{{locale:"zh",dateFormat:"Y-m-d",defaultDate:"{ed}",disable:[function(d){{return !isTrading(d);}}],onChange:send}});
 </script></body></html>"""
 
-    result = components.html(html, height=360, scrolling=False)
+    result = components.html(html, height=380, scrolling=False)
     if result is not None and isinstance(result, str) and result:
         try:
             data = json.loads(result)
