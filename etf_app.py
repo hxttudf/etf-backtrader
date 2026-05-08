@@ -737,7 +737,7 @@ if sel_group not in group_names:
 
 _start_val = pd.Timestamp(_qp("start", "2025-04-30"))
 _end_val = pd.Timestamp(_qp("end", datetime.today().strftime("%Y-%m-%d")))
-_available = [_dt.date.fromisoformat(d) for d in sorted(trading_days)]
+_available = [_dt.datetime.strptime(d, "%Y-%m-%d") for d in sorted(trading_days)]
 
 start_date = date_picker(
     picker_type=PickerType.date,
