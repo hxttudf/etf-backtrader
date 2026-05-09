@@ -673,6 +673,8 @@ def signal_for_date(prices, target_date, ma_days, roc_days):
 # ── Session state ──────────────────────────────────────────
 if "cfg" not in st.session_state:
     st.session_state.cfg = load_config()
+if st.session_state.pop("_rerun_sidebar", False):
+    st.rerun()
 
 cfg = st.session_state.cfg
 
@@ -730,10 +732,12 @@ _end_val = pd.Timestamp(_qp("end", datetime.today().strftime("%Y-%m-%d")))
 st.sidebar.markdown("**回测日期**")
 sb_date_col1, sb_date_col2 = st.sidebar.columns(2)
 with sb_date_col1:
-    start_date = st.date_input("开始", value=_start_val, key="sd_start", format="YYYY-MM-DD")
+    start_date = st.date_input("开始", value=_start_val, key="sd_start", format="YYYY-MM-DD",
+                               max_value=pd.Timestamp.today())
     start_date = pd.Timestamp(start_date)
 with sb_date_col2:
-    end_date = st.date_input("结束", value=_end_val, key="sd_end", format="YYYY-MM-DD")
+    end_date = st.date_input("结束", value=_end_val, key="sd_end", format="YYYY-MM-DD",
+                             max_value=pd.Timestamp.today())
     end_date = pd.Timestamp(end_date)
 mode = st.sidebar.radio("调仓模式", ["daily", "friday", "both"], horizontal=True,
                         index=["daily","friday","both"].index(_qp("mode", "daily")),
@@ -792,20 +796,79 @@ if optimize:
 
 st.sidebar.divider()
 st.sidebar.header("🔄 数据管理")
-if st.sidebar.button("刷新数据缓存", width='stretch', help="删除本地缓存并重新拉取全量历史数据"):
-    import glob
-    cache_dir = Path(__file__).parent
-    patterns = ["etf_prices_*.csv", "etf_prices_*.csv.bak"]
-    deleted = []
-    for pat in patterns:
-        for f in cache_dir.glob(pat):
-            f.unlink()
-            deleted.append(f.name)
-    st.cache_data.clear()
-    if deleted:
-        st.sidebar.success(f"已清除 {len(deleted)} 个缓存文件，下次回测将重新拉取数据")
+
+# 显示当前数据源缓存时间（st_mtime 是 UTC 时间戳，转为本地时间）
+_cache_path = Path(__file__).parent / f"etf_prices_{source}.csv"
+_cache_open_path = Path(__file__).parent / f"etf_prices_{source}_open.csv"
+if _cache_path.exists():
+    from datetime import datetime as _dt_lib
+    _mtime = pd.Timestamp(_dt_lib.fromtimestamp(_cache_path.stat().st_mtime))
+    _now = pd.Timestamp.now()
+    _ago = int((_now - _mtime).total_seconds() / 60)
+    if _ago < 60:
+        _time_str = f"{_ago} 分钟前"
+    elif _ago < 1440:
+        _time_str = f"{_ago // 60} 小时前"
     else:
-        st.sidebar.info("无缓存文件需要清除")
+        _time_str = f"{_ago // 1440} 天前"
+    _has_open = _cache_open_path.exists()
+    st.sidebar.caption(f"最近拉取: {_mtime.strftime('%m-%d %H:%M')} ({_time_str})" + (" 📊含开盘" if _has_open else ""))
+else:
+    st.sidebar.caption("📦 暂无缓存，运行回测后自动拉取")
+
+col_ref1, col_ref2 = st.sidebar.columns(2)
+with col_ref1:
+    if st.sidebar.button("🧹 清除缓存", width='stretch', help="删除本地CSV缓存，下次回测重新拉取"):
+        import glob
+        cache_dir = Path(__file__).parent
+        patterns = ["etf_prices_*.csv", "etf_prices_*.csv.bak"]
+        deleted = []
+        for pat in patterns:
+            for f in cache_dir.glob(pat):
+                f.unlink()
+                deleted.append(f.name)
+        st.cache_data.clear()
+        if deleted:
+            st.sidebar.success(f"已清除 {len(deleted)} 个缓存文件")
+        else:
+            st.sidebar.info("无缓存文件需要清除")
+        st.rerun()
+with col_ref2:
+    if st.sidebar.button("🔄 实时刷新", type="primary", width='stretch', help="强制实时拉取最新数据（失败自动回退到旧缓存）"):
+        import shutil
+        etfs = cfg["groups"][sel_group]
+        cache_dir = Path(__file__).parent
+        cache_file = cache_dir / f"etf_prices_{source}.csv"
+        cache_open = cache_dir / f"etf_prices_{source}_open.csv"
+        # 备份旧文件（用于拉取失败时回退）
+        bak_file = cache_dir / f"etf_prices_{source}.csv.bak"
+        bak_open = cache_dir / f"etf_prices_{source}_open.csv.bak"
+        has_bak = False
+        if cache_file.exists():
+            shutil.copy2(cache_file, bak_file)
+            has_bak = True
+        if cache_open.exists():
+            shutil.copy2(cache_open, bak_open)
+        # 删除缓存 → 强制 load_prices 重新拉取
+        cache_file.unlink(missing_ok=True)
+        cache_open.unlink(missing_ok=True)
+        st.cache_data.clear()
+        with st.spinner(f"正在实时拉取 {source} 数据..."):
+            ok = False
+            try:
+                _ = cached_prices(etfs, sel_group, source=source)
+                _ = cached_open_prices(etfs, sel_group, source=source)
+                ok = True
+                st.sidebar.success("✅ 数据已实时拉取完成")
+            except Exception as e:
+                st.sidebar.error(f"❌ 拉取失败: {e}")
+            finally:
+                if not ok and has_bak:
+                    # 拉取失败 → 恢复备份
+                    shutil.copy2(bak_file, cache_file)
+                bak_file.unlink(missing_ok=True)
+                bak_open.unlink(missing_ok=True)
+        st.rerun()
 
 st.sidebar.divider()
 st.sidebar.header("📡 每日信号")
@@ -890,6 +953,9 @@ if run_btn:
             all_metrics[m] = (metrics_dict, bench_metrics, trades, ret, nav, bnav)
             modes_data[m] = (nav, bnav, trade_dates, trade_details)
             daily_signals_by_mode[m] = daily_signals
+
+        # 触发侧边栏时间戳刷新（数据可能被重新拉取）
+        st.session_state["_rerun_sidebar"] = True
 
         st.subheader(f"回测结果: {sel_group}  |  {actual_start_str} ~ {end_str}")
 
