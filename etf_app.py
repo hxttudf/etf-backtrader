@@ -1594,9 +1594,10 @@ if sig_btn:
         if last_data_date < today - pd.Timedelta(days=1):
             st.warning(f"⚠️ 缓存数据最新日期为 {last_data_date.strftime('%Y-%m-%d')}，可能不是最新。如需拉取最新数据请点「刷新数据缓存」按钮。")
         if target_dt > last_data_date:
-            st.error(f"⚠️ 查询日期 {target_dt.strftime('%Y-%m-%d')} 超出数据范围（最新: {last_data_date.strftime('%Y-%m-%d')}），无法给出有效信号")
-            st.stop()
+            st.warning(f"⚠️ 查询日期 {target_dt.strftime('%Y-%m-%d')} 超出数据范围，使用最新数据 {last_data_date.strftime('%Y-%m-%d')} 计算信号")
+            sig_date_actual = last_data_date
         else:
+            sig_date_actual = target_dt
             for name in etfs:
                 if target_dt in prices.index:
                     px = prices[name].loc[target_dt]
@@ -1609,7 +1610,7 @@ if sig_btn:
                             missing_etfs.append(name)
 
         best, df, actual_dt = _strategy_signal_for_date(
-            prices, sig_date.strftime("%Y-%m-%d"), strategy, ma_days, roc_days,
+            prices, sig_date_actual.strftime("%Y-%m-%d"), strategy, ma_days, roc_days,
             open_prices=open_prices)
 
     if df is None:
