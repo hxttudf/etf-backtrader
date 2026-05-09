@@ -893,7 +893,7 @@ if run_btn:
 
         st.subheader(f"回测结果: {sel_group}  |  {actual_start_str} ~ {end_str}")
 
-    # Metrics cards
+    # ── 1. 回测指标 ──
     for m in modes_to_run:
         mm, bm, trades, ret, nav, bnav = all_metrics[m]
         trade_dates = modes_data[m][2]
@@ -901,7 +901,7 @@ if run_btn:
         buys = sum(1 for t in trade_details if t[2] is not None)
         sells = sum(1 for t in trade_details if t[1] is not None)
         wr = trade_win_rate(ret, trade_details, prices_full)
-        st.markdown(f"**{m.upper()} 调仓**")
+        st.markdown(f"### 📊 {m.upper()} 策略指标")
 
         def render_metrics(mm, trades, wr, buys, sells, metric_keys, cols_per_row=6):
             """Render metrics in rows, cols_per_row per row. No hard column count."""
@@ -953,14 +953,17 @@ if run_btn:
         render_metrics(mm, trades, wr, buys, sells, metric_keys)
         pos_fn = position_dist_bt if use_backtrader else position_dist
         pos_args = (prices_full, actual_start_str, end_str, m, ma_days, roc_days)
-        pos_kwargs = dict(strategy=strategy) if use_backtrader else {}
         if use_backtrader:
+            pos_kwargs = dict(strategy=bt_mode)
             pos_kwargs['open_prices'] = _exec_open
             pos_kwargs['min_hold'] = 0
+        else:
+            pos_kwargs = {}
         pos_days, pos_buys, pos_contrib, pos_cum, pos_wr = pos_fn(*pos_args, **pos_kwargs)
         total = sum(pos_days.values())
         if total == 0:
             st.warning("无持仓数据，跳过ETF分布展示")
+        st.markdown(f"### 🗂️ {m.upper()} 持仓分布")
         pos_rows = []
         for k in sorted(pos_days.keys(), key=lambda x: -pos_days[x]):
             d = pos_days[k]
@@ -979,16 +982,19 @@ if run_btn:
         yr = yearly_returns(ret)
         if len(yr) > 1:
             yr_badges = [f"` {y}: {r:+.1%} `" for y, r in yr.items()]
-            st.markdown("**逐年收益**  " + "  ".join(yr_badges))
+            st.markdown(f"### 📅 {m.upper()} 逐年收益  " + "  ".join(yr_badges))
 
-    # Plotly chart
+    # ── 2. 净值曲线 ──
+    st.divider()
+    st.markdown("## 📈 净值曲线")
     st.plotly_chart(
         build_plotly_fig(prices_full, etf_codes, modes_data, actual_start_str, end_str),
         width='stretch',
     )
 
-    # ── ETF 价格表 + 每日信号（曲线图下方，日期倒序）──────
+    # ── 3. ETF 价格数据 ──
     st.divider()
+    st.markdown("## 💹 ETF 价格数据")
     st.markdown("**📊 ETF 真实价格**")
 
     # Data freshness warning
@@ -1034,7 +1040,9 @@ if run_btn:
     st.caption("收盘价/开盘价（未填充），按日期倒序。NaN = 当日无交易或数据缺失。")
 
     if daily_signals:
+        # ── 4. 每日信号 ──
         st.divider()
+        st.markdown("## 📡 每日信号")
         strategy_labels_short = {
             "momentum": "动量轮动", "rsi": "RSI均值回归",
             "bb": "布林带均值回归", "macd": "MACD趋势跟随",
@@ -1042,7 +1050,7 @@ if run_btn:
             "vol_weighted": "波动率加权", "stop_loss": "动量+移动止损",
             "dual_lookback": "双周期动量", "trend_strength": "趋势确认动量",
         }
-        st.markdown(f"**📡 每日信号 — {strategy_labels_short.get(strategy, strategy)}**")
+        st.markdown(f"### 📡 信号明细 — {strategy_labels_short.get(strategy, strategy)}")
 
         # Build trade date set for marking rows
         trade_date_set = {str(d)[:10] for d in trade_dates
@@ -1116,7 +1124,24 @@ if run_btn:
             if sell_info:
                 sell_px_str = sell_info[1]
 
+            # 今日信号：基于当日数据的理想持仓（与实持可能不同，如MOO T+1执行或非检查日）
+            best_today = None
+            best_qualifiers = {}
+            for name, code in etfs.items():
+                val = match.get(name)
+                if val is not None:
+                    px_val = prices_full[name].get(td, np.nan) if td in prices_full.index else np.nan
+                    if pd.notna(px_val):
+                        p_ffill = prices_full[name].ffill()
+                        ma_val = p_ffill.rolling(ma_days).mean().get(td, np.nan)
+                        if pd.notna(ma_val) and px_val > ma_val:
+                            best_qualifiers[name] = val
+            best_today = max(best_qualifiers, key=best_qualifiers.get) if best_qualifiers else None
+            best_label = f"{best_today} ({etf_codes.get(best_today, '')})" if best_today else "CASH"
+            suggest_changed = (best_today != holding)
+
             row = {"日期": dk, "持仓": hlabel,
+                   "今日信号": f"→ {best_label}" if suggest_changed else best_label,
                    "调仓": "🔄" if is_trade else "",
                    "买入价格": buy_px_str,
                    "卖出价格": sell_px_str}
@@ -1161,9 +1186,11 @@ if run_btn:
         sig_rows.reverse()  # show latest first
         if sig_rows:
             n_trade = sum(1 for r in sig_rows if r["调仓"] == "🔄")
+            n_diff = sum(1 for r in sig_rows if "→" in str(r.get("今日信号", "")))
             st.caption(
                 f"显示最近 {len(sig_rows)} 个信号日（日期倒序）。"
-                f"其中 {n_trade} 天发生调仓（🔄标记）。"
+                f"其中 {n_trade} 天调仓（🔄），{n_diff} 天持仓≠信号。"
+                f"「今日信号」= 当日理想的持仓（MOO下T+1执行/非检查日均可能与实持不同）。"
                 f"数值为策略排名指标（动量=ROC，RSI=RSI值，BB=%B，MACD=柱状线），越大越优先。"
                 f"「—」= 当日数据缺失。「✗MA」= 指标有效但未通过MA{ma_days}趋势过滤。「✗数据」= 当日无交易数据。"
                 f" ▶🟢=买入 ◀🔴=卖出"
@@ -1179,9 +1206,10 @@ if run_btn:
             styled = df_sig.style.map(_highlight_prices)
             st.dataframe(styled, height=400, hide_index=True, width='stretch')
 
-    # ── Compare all groups ────────────────────────────────
+    # ── 5. 全部组合对比 ──
     if compare_all:
         st.divider()
+        st.markdown("## 📋 全部组合对比")
         st.subheader("📊 全部组合对比", divider="blue")
 
         all_groups = dict(cfg["groups"])
@@ -1278,9 +1306,10 @@ if run_btn:
             df_cmp = pd.DataFrame(compare_rows)
             st.dataframe(df_cmp, hide_index=True, width='stretch')
 
-    # ── Parameter optimization ────────────────────────────
+    # ── 6. 参数遍历 ──
     if optimize:
         st.divider()
+        st.markdown("## 🔍 参数遍历")
         st.subheader("🔍 参数遍历结果", divider="orange")
 
         ma_range = list(range(10, 201, opt_ma_step))

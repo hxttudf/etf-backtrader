@@ -33,6 +33,10 @@ def _get_manual_bt():
     return _manual_run_backtest
 
 
+# ═══════════════════════════════════════════════════════════
+# 佣金模型 — A股ETF 万1双向佣金 + 万5印花税(仅卖出)
+# ═══════════════════════════════════════════════════════════
+
 class StampDutyCommission(bt.CommInfoBase):
     """A股ETF佣金: 万1双向 + 万5印花税(仅卖出)"""
     params = (
@@ -49,6 +53,10 @@ class StampDutyCommission(bt.CommInfoBase):
             comm += abs(size) * price * self.p.stamp_duty
         return comm
 
+
+# ═══════════════════════════════════════════════════════════
+# 数据源 — 构建 backtrader PandasData，注入预计算 MA/ROC
+# ═══════════════════════════════════════════════════════════
 
 def _make_data_feed(prices, name, open_prices=None, ma_df=None, roc_df=None):
     """创建 backtrader 数据源。
@@ -100,6 +108,10 @@ def _make_data_feed(prices, name, open_prices=None, ma_df=None, roc_df=None):
 
 # ── Helper: trade execution (shared by all strategies) ──────────────
 
+# ═══════════════════════════════════════════════════════════
+# 交易执行 — 所有策略共享的调仓下单函数
+# ═══════════════════════════════════════════════════════════
+
 def _execute_trade(strat, dt, new_holding):
     """Execute a position change. With coc/coo, orders fill at same bar (close or open)."""
     if strat._holding is not None:
@@ -117,7 +129,9 @@ def _execute_trade(strat, dt, new_holding):
     strat._last_trade_bar = len(strat)
 
 
-# ── Strategies ──────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# [策略] 动量轮动 — MA60趋势过滤 + ROC20动量排名
+# ═══════════════════════════════════════════════════════════
 
 class MomentumRotation(bt.Strategy):
     """双动量轮动: MA60趋势过滤 + ROC20动量排名，持有最优单一ETF
@@ -188,6 +202,10 @@ class MomentumRotation(bt.Strategy):
             _execute_trade(self, dt, new_holding)
 
 
+# ═══════════════════════════════════════════════════════════
+# [策略] MOC(收盘执行) — coc=True, 当日收盘出信号立即成交
+# ═══════════════════════════════════════════════════════════
+
 class MOCRotation(bt.Strategy):
     """MOC 收盘执行: coc=True, 信号 close[-1] → 执行 close[0]
 
@@ -216,6 +234,7 @@ class MOCRotation(bt.Strategy):
         self._trade_log = []
         self._holding = None
         self._last_trade_bar = -999
+        self._started_in_range = False
         self._ma = self.p.ma_df
         self._roc = self.p.roc_df
         self._signal_by_bar = {}  # bar index → computed signal
@@ -226,6 +245,15 @@ class MOCRotation(bt.Strategy):
         dt_ts = pd.Timestamp(dt)
         self._daily_holding.append((dt, self._holding))
         self._daily_value.append((dt, self.broker.getvalue()))
+
+        # Clean start: reset holding on first bar in backtest range
+        if self.p.start_date and not self._started_in_range:
+            sd = pd.Timestamp(self.p.start_date)
+            ed = pd.Timestamp(self.p.end_date) if self.p.end_date else pd.Timestamp.now()
+            if sd <= dt <= ed:
+                self._holding = None
+                self._last_trade_bar = -999
+                self._started_in_range = True
 
         should_check = (
             self.p.rebalance_mode == 'daily' or dt.weekday() == 4
@@ -267,6 +295,9 @@ class MOCRotation(bt.Strategy):
             # Update sig_record holding to post-trade state
             sig_record['holding'] = self._holding
 
+# ═══════════════════════════════════════════════════════════
+# [策略] MOO(开盘执行) — coo=True, 信号在 next_open 成交
+# ═══════════════════════════════════════════════════════════
 
 class MOORotation(bt.Strategy):
     """MOO 开盘执行: coo=True, next() 算信号, next_open() 执行
@@ -370,6 +401,9 @@ class MOORotation(bt.Strategy):
             if self._daily_signals:
                 self._daily_signals[-1]['holding'] = self._holding
 
+# ═══════════════════════════════════════════════════════════
+# [策略] 动量+移动止损 — 从峰值回落超过阈值时空仓
+# ═══════════════════════════════════════════════════════════
 
 class StopLossMomentum(bt.Strategy):
     """动量轮动 + 移动止损: 从持仓高点的最大回撤超过阈值时空仓
@@ -458,6 +492,10 @@ class StopLossMomentum(bt.Strategy):
             self._peak_price = 0.0
 
 
+# ═══════════════════════════════════════════════════════════
+# [策略] RSI均值回归 — 买入最超卖的ETF
+# ═══════════════════════════════════════════════════════════
+
 class RSIMeanReversion(bt.Strategy):
     """RSI均值回归轮动: 买入最超卖的ETF，持有单一最优ETF
 
@@ -518,6 +556,10 @@ class RSIMeanReversion(bt.Strategy):
                 and len(self) - self._last_trade_bar >= self.p.min_hold:
             _execute_trade(self, dt, new_holding)
 
+
+# ═══════════════════════════════════════════════════════════
+# [策略] 布林带均值回归 — 买入最接近下轨的ETF
+# ═══════════════════════════════════════════════════════════
 
 class BollingerBandsRotation(bt.Strategy):
     """布林带均值回归轮动: 买入最接近下轨的ETF，持有单一最优ETF
@@ -586,6 +628,10 @@ class BollingerBandsRotation(bt.Strategy):
                 and len(self) - self._last_trade_bar >= self.p.min_hold:
             _execute_trade(self, dt, new_holding)
 
+
+# ═══════════════════════════════════════════════════════════
+# [策略] MACD趋势跟随 — 买入MACD柱状线最强的ETF
+# ═══════════════════════════════════════════════════════════
 
 class MACDTrendFollowing(bt.Strategy):
     """MACD趋势跟随轮动: 买入MACD柱状线最强的ETF，持有单一最优ETF
@@ -658,6 +704,10 @@ class MACDTrendFollowing(bt.Strategy):
             _execute_trade(self, dt, new_holding)
 
 
+# ═══════════════════════════════════════════════════════════
+# [策略] 动量+RSI过滤 — 动量轮动基础上排除RSI追高
+# ═══════════════════════════════════════════════════════════
+
 class MomentumRSI(bt.Strategy):
     """动量轮动 + RSI 过滤: MA60趋势 → ROC25排名 → RSI防追高 → 选最优
 
@@ -727,6 +777,10 @@ class MomentumRSI(bt.Strategy):
                 and len(self) - self._last_trade_bar >= self.p.min_hold:
             _execute_trade(self, dt, new_holding)
 
+
+# ═══════════════════════════════════════════════════════════
+# [策略] 动量+布林带过滤 — 动量轮动基础上排除假突破
+# ═══════════════════════════════════════════════════════════
 
 class MomentumBB(bt.Strategy):
     """动量轮动 + 布林带过滤: MA60趋势 → ROC25排名 → BB防假突破 → 选最优
@@ -806,6 +860,10 @@ class MomentumBB(bt.Strategy):
             _execute_trade(self, dt, new_holding)
 
 
+# ═══════════════════════════════════════════════════════════
+# [策略] 波动率加权动量 — ROC/波动率排名，选单位风险最优
+# ═══════════════════════════════════════════════════════════
+
 class VolWeightedMomentum(bt.Strategy):
     """波动率加权动量: ROC/波动率排名，选单位风险收益最优的ETF
 
@@ -876,6 +934,10 @@ class VolWeightedMomentum(bt.Strategy):
             _execute_trade(self, dt, new_holding)
 
 
+# ═══════════════════════════════════════════════════════════
+# [策略] 双周期动量 — 综合短期+中期ROC，避免单周期噪音
+# ═══════════════════════════════════════════════════════════
+
 class DualLookbackMomentum(bt.Strategy):
     """双周期动量: 综合短期+中期ROC排名，避免单一周期噪音
 
@@ -944,6 +1006,10 @@ class DualLookbackMomentum(bt.Strategy):
                 and len(self) - self._last_trade_bar >= self.p.min_hold:
             _execute_trade(self, dt, new_holding)
 
+
+# ═══════════════════════════════════════════════════════════
+# [策略] 趋势确认动量 — 额外要求MA本身在上升
+# ═══════════════════════════════════════════════════════════
 
 class TrendStrengthMomentum(bt.Strategy):
     """趋势确认动量: 要求MA本身也在上升(MA slope > 0)，避免假突破
@@ -1016,6 +1082,10 @@ class TrendStrengthMomentum(bt.Strategy):
             _execute_trade(self, dt, new_holding)
 
 
+# ═══════════════════════════════════════════════════════════
+# 策略注册表 — 策略名→策略类的映射
+# ═══════════════════════════════════════════════════════════
+
 STRATEGIES = {
     'momentum': MomentumRotation,
     'rsi': RSIMeanReversion,
@@ -1031,6 +1101,10 @@ STRATEGIES = {
     'moo': MOORotation,
 }
 
+
+# ═══════════════════════════════════════════════════════════
+# Cerebro 配置 — 创建与配置回测引擎实例
+# ═══════════════════════════════════════════════════════════
 
 def _setup_cerebro(prices, mode, ma_days, roc_days, min_hold=0, strategy='momentum',
                    open_prices=None, exec_mode='moc', start_date=None, end_date=None):
@@ -1075,6 +1149,10 @@ def _setup_cerebro(prices, mode, ma_days, roc_days, min_hold=0, strategy='moment
     return cerebro
 
 
+# ═══════════════════════════════════════════════════════════
+# 输出转换 — backtrader 策略输出转统一接口格式
+# ═══════════════════════════════════════════════════════════
+
 def _convert_output(strat, prices, start_date, end_date, etf_names):
     """将 backtrader 策略输出转换为与原接口一致的数据结构"""
     value_map = {dt: v for dt, v in strat._daily_value}
@@ -1115,6 +1193,10 @@ def _convert_output(strat, prices, start_date, end_date, etf_names):
 
     return nav, bench_nav, ret, bench_ret, trades, trade_dates, trade_details, strat._daily_signals
 
+
+# ═══════════════════════════════════════════════════════════
+# 回测入口 — 对外暴露的回测接口，与 etf_app.py 对接
+# ═══════════════════════════════════════════════════════════
 
 def run_backtest_bt(prices, mode, start_date, end_date, ma_days=60, roc_days=25, min_hold=0,
                     strategy='moc', open_prices=None, exec_mode='moc', delay=0):
@@ -1167,13 +1249,17 @@ def run_backtest_bt(prices, mode, start_date, end_date, ma_days=60, roc_days=25,
 
     strat_cls = MOCRotation if exec_mode == 'moc' else MOORotation
     strat_kwargs = dict(etf_names=etf_names, rebalance_mode=mode, min_hold=min_hold,
-                        ma_df=ma_full, roc_df=roc_full, start_date=None, end_date=None,
+                        ma_df=ma_full, roc_df=roc_full, start_date=start_ts, end_date=end_ts,
                         delay=delay)
     cerebro.addstrategy(strat_cls, **strat_kwargs)
     results = cerebro.run()
     strat = results[0]
     return _convert_output(strat, prices_bt, start_date, end_date, etf_names)
 
+
+# ═══════════════════════════════════════════════════════════
+# 持仓分布统计 — 各ETF持有天数/买入次数/收益占比
+# ═══════════════════════════════════════════════════════════
 
 def position_dist_bt(prices, start_date, end_date, mode, ma_days=60, roc_days=25, min_hold=0,
                      strategy='moc', open_prices=None, exec_mode='moc'):
@@ -1202,11 +1288,26 @@ def position_dist_bt(prices, start_date, end_date, mode, ma_days=60, roc_days=25
 
     start_ts = pd.Timestamp(start_date)
     end_ts = pd.Timestamp(end_date)
+
+    # Count buys from trade log
+    trade_in_range = set()
     for dt, from_etf, to_etf in strat._trade_log:
         if to_etf is not None and start_ts <= pd.Timestamp(dt) <= end_ts:
             buys[to_etf] += 1
+            trade_in_range.add(str(pd.Timestamp(dt))[:10])
 
     holding_map = {dt: h for dt, h in strat._daily_holding}
+
+    # Fallback: count initial holding as a buy if inherited from pre-range
+    in_range_dates = [d for d in prices.index if start_ts <= d <= end_ts]
+    if in_range_dates:
+        first_dt = in_range_dates[0]
+        first_h = holding_map.get(first_dt)
+        if first_h is not None and first_h not in ("CASH",) and first_h in buys:
+            day_key = str(first_dt)[:10]
+            if day_key not in trade_in_range:
+                buys[first_h] += 1
+
     for i in range(len(prices)):
         dt = prices.index[i]
         in_range = dt >= pd.Timestamp(start_date) and dt <= pd.Timestamp(end_date)
