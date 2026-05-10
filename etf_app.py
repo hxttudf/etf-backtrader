@@ -993,28 +993,28 @@ if _mode == "网格交易":
                             sell_dates.append(d); sell_ps.append(t.price)
                             high_px = daily_high.get(ts, t.price)
                             s_text_y.append(high_px * 1.005)
-                    # 实际成交价小圆点（对齐网格线）
+                    # 实际成交价小圆点（B=红，S=蓝）
                     fig2.add_trace(go.Scatter(
                         x=buy_dates, y=buy_ps, mode='markers',
-                        marker=dict(symbol='circle', size=8, color='#1976D2', line=dict(color='white', width=1)),
+                        marker=dict(symbol='circle', size=8, color='#D32F2F', line=dict(color='white', width=1)),
                         name='买入', hovertemplate='买入 %{y:.3f}<extra></extra>', showlegend=False
                     ))
                     fig2.add_trace(go.Scatter(
                         x=sell_dates, y=sell_ps, mode='markers',
-                        marker=dict(symbol='circle', size=8, color='#D32F2F', line=dict(color='white', width=1)),
+                        marker=dict(symbol='circle', size=8, color='#1976D2', line=dict(color='white', width=1)),
                         name='卖出', hovertemplate='卖出 %{y:.3f}<extra></extra>', showlegend=False
                     ))
-                    # B/S 文字（K线外侧）
+                    # B/S 文字（B=红在K线下方，S=蓝在K线上方）
                     fig2.add_trace(go.Scatter(
                         x=buy_dates, y=b_text_y, mode='text',
                         text=['B']*len(buy_dates),
-                        textfont=dict(color='#1976D2', size=12, family='Arial Black'),
+                        textfont=dict(color='#D32F2F', size=12, family='Arial Black'),
                         name='买入', hovertemplate='B %{y:.3f}<extra></extra>'
                     ))
                     fig2.add_trace(go.Scatter(
                         x=sell_dates, y=s_text_y, mode='text',
                         text=['S']*len(sell_dates),
-                        textfont=dict(color='#D32F2F', size=12, family='Arial Black'),
+                        textfont=dict(color='#1976D2', size=12, family='Arial Black'),
                         name='卖出', hovertemplate='S %{y:.3f}<extra></extra>'
                     ))
                 fig2.update_layout(height=600, template='plotly_white',
