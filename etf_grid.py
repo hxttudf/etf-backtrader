@@ -1,12 +1,8 @@
 """网格交易引擎 — 东方财富动态基准模型"""
 
 from dataclasses import dataclass
-from typing import Literal
 import pandas as pd
 
-GridType = Literal["arithmetic", "geometric", "volatility"]
-
-# T+0 标的识别：QDII/跨境/黄金/债券/货币 ETF 代码前缀
 T0_PREFIXES = ("15994", "15974", "513", "518", "511", "15998")
 
 
@@ -23,13 +19,13 @@ class Trade:
 @dataclass
 class GridConfig:
     symbol: str
-    grid_type: GridType = "arithmetic"
+    grid_type: str = "arithmetic"
     step_value: float = 0.0
     base_price: float = 0.0
     amount_per_grid: float = 10000.0
     max_positions: int = 10
     initial_capital: float = 0.0
-    initial_shares: int = 0   # 底仓（T+1 时首日可卖）
+    initial_shares: int = 0
     commission: float = 0.0003
     slippage: float = 0.001
 
@@ -45,6 +41,7 @@ class GridEngine:
         self.position: int = 0
         self.today_bought: int = 0
         self.base_price: float = 0
+        self.prev_close: float = 0
         self.trades: list = []
         self._pending_sell: float | None = None
         self._is_t0 = _is_t0(cfg.symbol)
@@ -60,33 +57,38 @@ class GridEngine:
     def _sell_price(self):
         return round(self.base_price + self._step(self.base_price), 4)
 
-    def _sellable(self) -> int:
-        """今日可卖持仓"""
+    def _sellable(self):
         return self.position if self._is_t0 else (self.position - self.today_bought)
 
     def _process_bar(self, ohlc, dt):
         o, h, l = float(ohlc["open"]), float(ohlc["high"]), float(ohlc["low"])
+        c = float(ohlc["close"])
         cfg = self.cfg
-        if self.trades:
+
+        # 新一天：基准价 = 昨日收盘价（东方财富"按日涨跌幅"模式）
+        if self.prev_close > 0:
+            self.base_price = self.prev_close
+
+        if self.trades and isinstance(dt, pd.Timestamp):
             last_dt = self.trades[-1].datetime
-            if isinstance(dt, pd.Timestamp) and isinstance(last_dt, pd.Timestamp):
-                if last_dt.date() < dt.date():
-                    self.today_bought = 0
+            if isinstance(last_dt, pd.Timestamp) and last_dt.date() < dt.date():
+                self.today_bought = 0
+
         bp = self._buy_price()
         sp = self._sell_price()
-        # ── 触发卖出：最高价触及卖出价（含跳空）──
-        if self._pending_sell is not None:
-            if sp <= h and self._sellable() > 0:
-                qty = min(int(cfg.amount_per_grid / sp), self._sellable())
-                if qty > 0:
-                    rev = qty * sp * (1 - cfg.commission) - 0.1
-                    self.cash += rev
-                    self.position -= qty
-                    self.trades.append(Trade(dt, "sell", sp, rev, qty, self._is_t0))
-                    self.base_price = sp
-                    self._pending_sell = None
-        # ── 高→低：触发买入 ──
-        if self._pending_sell is None and l <= bp < h:
+
+        # 卖出：最高价触及卖出价
+        if self._pending_sell is not None and sp <= h and self._sellable() > 0:
+            qty = min(int(cfg.amount_per_grid / sp), self._sellable())
+            if qty > 0:
+                rev = qty * sp * (1 - cfg.commission) - 0.1
+                self.cash += rev
+                self.position -= qty
+                self.trades.append(Trade(dt, "sell", sp, rev, qty, self._is_t0))
+                self._pending_sell = None
+
+        # 买入：最低价触及买入价
+        if self._pending_sell is None and l <= bp:
             qty = int(cfg.amount_per_grid / (bp * (1 + cfg.slippage)))
             if qty > 0:
                 cost = qty * bp * (1 + cfg.commission) + 0.1
@@ -95,8 +97,9 @@ class GridEngine:
                     self.position += qty
                     self.today_bought += qty
                     self.trades.append(Trade(dt, "buy", bp, cost, qty, self._is_t0))
-                    self.base_price = bp
                     self._pending_sell = self._sell_price()
+
+        self.prev_close = c
 
     def run(self, df) -> list:
         if len(df) == 0:
@@ -104,10 +107,10 @@ class GridEngine:
         self.base_price = self.cfg.base_price if self.cfg.base_price > 0 else float(df["close"].iloc[0])
         cap = self.cfg.initial_capital if self.cfg.initial_capital > 0 else self.cfg.amount_per_grid * self.cfg.max_positions
         init_pos = self.cfg.initial_shares
-        init_cost = init_pos * self.base_price
-        self.cash = cap - init_cost
+        self.cash = cap - init_pos * self.base_price
         self.position = init_pos
         self.today_bought = 0
+        self.prev_close = 0
         self.trades = []
         self._pending_sell = None
         for dt, row in df.iterrows():
@@ -161,8 +164,7 @@ def run_grid_backtest(symbol, df, grid_type="arithmetic",
     config = GridConfig(symbol=symbol, grid_type=grid_type, step_value=step_value,
                         base_price=base_price, amount_per_grid=amount_per_grid,
                         max_positions=max_positions, initial_capital=initial_capital,
-                        initial_shares=initial_shares, commission=commission,
-                        slippage=slippage)
+                        initial_shares=initial_shares, commission=commission, slippage=slippage)
     engine = GridEngine(config)
     trades = engine.run(df)
     return trades, engine.get_metrics(df), engine
