@@ -710,6 +710,8 @@ if _mode == "网格交易":
                                           help="每条网格线触发时买入/卖出的金额。如每格1万元、10格，总资金约需10万元")
     grid_max_pos = st.sidebar.slider("最大持仓格数", 1, 30, 10,
                                      help="最多同时持有几个网格的仓位。例：20格设5，则最多同时持有5格，控制总风险敞口")
+    grid_init_shares = st.sidebar.number_input("初始底仓(股)", 0, 1000000, 0, step=1000,
+                                               help="回测开始时已持有的持仓数量。设底仓后，价格向上时可以先卖")
 
     sb_date_col1_g, sb_date_col2_g = st.sidebar.columns(2)
     with sb_date_col1_g:
@@ -744,7 +746,9 @@ if _mode == "网格交易":
                 trades, metrics, engine = run_grid_backtest(
                     grid_symbol, df, grid_type=grid_type,
                     n_levels=grid_n, amount_per_grid=grid_amount,
-                    max_positions=grid_max_pos, commission=comm, slippage=slip,
+                    max_positions=grid_max_pos,
+                    initial_shares=grid_init_shares,
+                    commission=comm, slippage=slip,
                 )
 
             st.subheader(f"网格回测: {grid_symbol}  |  {grid_start} ~ {grid_end}")

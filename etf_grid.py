@@ -54,6 +54,7 @@ class GridConfig:
     price_high: float = 0.0
     amount_per_grid: float = 10000.0
     max_positions: int = 10
+    initial_shares: int = 0     # 初始底仓（股/份）
     commission: float = 0.0003
     slippage: float = 0.001
     atr_period: int = 20
@@ -140,13 +141,17 @@ class GridEngine:
             prices = calc(cfg.price_low, cfg.price_high, cfg.n_levels, first_price)
 
         levels = [(round(p, 4), False, False) for p in sorted(prices)]
+        init_cash = cfg.amount_per_grid * min(cfg.max_positions, len(levels))
+        # 有底仓：从现金扣除底仓市值，计入持仓
+        init_position = cfg.initial_shares
+        init_cost = init_position * first_price
         self.state = GridState(
             levels=[list(l) for l in levels],
-            cash=cfg.amount_per_grid * min(cfg.max_positions, len(levels)),
-            position=0,
+            cash=init_cash - init_cost,
+            position=init_position,
             today_bought=0,
             base_price=first_price,
-            total_value=cfg.amount_per_grid * min(cfg.max_positions, len(levels)),
+            total_value=init_cash,
             trades=[],
         )
 
@@ -343,6 +348,7 @@ def run_grid_backtest(symbol: str, df: pd.DataFrame,
                       n_levels: int = 10,
                       amount_per_grid: float = 10000.0,
                       max_positions: int = 10,
+                      initial_shares: int = 0,
                       commission: float = 0.0003,
                       slippage: float = 0.001) -> tuple[list[Trade], dict, GridEngine]:
     """快捷回测入口
@@ -371,6 +377,7 @@ def run_grid_backtest(symbol: str, df: pd.DataFrame,
         price_high=price_high,
         amount_per_grid=amount_per_grid,
         max_positions=max_positions,
+        initial_shares=initial_shares,
         commission=commission,
         slippage=slippage,
     )
