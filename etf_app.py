@@ -976,45 +976,41 @@ if _mode == "网格交易":
                     fig2.add_hline(y=price, line_color='#888888',
                                    line_width=0.8, opacity=0.35,
                                    annotation_text=f"L{i+1} {price:.3f}")
-                # 买卖标记：实心点（实际成交价）+ B/S 文字（K线上下两侧）
+                # 买卖标记：加大圆点（对齐网格线成交价）+ B/S 文字（同位置）
                 if trades:
                     buy_dates, buy_ps, sell_dates, sell_ps = [], [], [], []
-                    b_dots, s_dots = [], []
-                    daily_high = daily['high'].to_dict()
-                    daily_low = daily['low'].to_dict()
                     for t in trades:
                         d = t.datetime.strftime("%Y-%m-%d")
-                        ts = pd.Timestamp(d)
                         if t.side == "buy":
                             buy_dates.append(d); buy_ps.append(t.price)
-                            low_px = daily_low.get(ts, t.price)
-                            b_dots.append(low_px * 0.995)
                         else:
                             sell_dates.append(d); sell_ps.append(t.price)
-                            high_px = daily_high.get(ts, t.price)
-                            s_dots.append(high_px * 1.005)
-                    # 实际成交价小圆点
+                    # 大圆点（实际成交价，对齐网格线）
                     fig2.add_trace(go.Scatter(
                         x=buy_dates, y=buy_ps, mode='markers',
-                        marker=dict(symbol='circle', size=6, color='#1976D2', line=dict(color='white', width=0.5)),
+                        marker=dict(symbol='circle', size=10, color='#1976D2',
+                                    line=dict(color='white', width=1), opacity=0.8),
                         name='买入', hovertemplate='买入 %{y:.3f}<extra></extra>', showlegend=False
                     ))
                     fig2.add_trace(go.Scatter(
                         x=sell_dates, y=sell_ps, mode='markers',
-                        marker=dict(symbol='circle', size=6, color='#D32F2F', line=dict(color='white', width=0.5)),
+                        marker=dict(symbol='circle', size=10, color='#D32F2F',
+                                    line=dict(color='white', width=1), opacity=0.8),
                         name='卖出', hovertemplate='卖出 %{y:.3f}<extra></extra>', showlegend=False
                     ))
-                    # B/S 文字（K线外侧）
+                    # B/S 文字（在圆点上方偏右，清晰可见）
                     fig2.add_trace(go.Scatter(
-                        x=buy_dates, y=b_dots, mode='text',
+                        x=buy_dates, y=buy_ps, mode='text',
                         text=['B']*len(buy_dates),
-                        textfont=dict(color='#1976D2', size=13, family='Arial Black'),
+                        textfont=dict(color='#1976D2', size=11, family='Arial Black'),
+                        textposition='top center',
                         name='买入', hovertemplate='B %{y:.3f}<extra></extra>'
                     ))
                     fig2.add_trace(go.Scatter(
-                        x=sell_dates, y=s_dots, mode='text',
+                        x=sell_dates, y=sell_ps, mode='text',
                         text=['S']*len(sell_dates),
-                        textfont=dict(color='#D32F2F', size=13, family='Arial Black'),
+                        textfont=dict(color='#D32F2F', size=11, family='Arial Black'),
+                        textposition='top center',
                         name='卖出', hovertemplate='S %{y:.3f}<extra></extra>'
                     ))
                 fig2.update_layout(height=600, template='plotly_white',
