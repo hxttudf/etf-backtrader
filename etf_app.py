@@ -687,46 +687,112 @@ _mode = st.sidebar.radio("模式", ["双动量轮动", "网格交易"], horizont
 
 if _mode == "网格交易":
     # ═══════════════════════════════════════════════════════
-    # 网格交易参数
+    # 网格交易参数（支持 URL query params 持久化）
     # ═══════════════════════════════════════════════════════
+    gq = st.query_params
+    _gqp = lambda k, d: gq[k] if k in gq and gq[k] not in ("NaT", "") else d
+
     st.sidebar.header("📊 网格参数")
 
-    grid_symbol = st.sidebar.text_input("标的代码", value="510050",
-                                        help="ETF 或个股代码，如 510050(上证50)、159740(纳指ETF)")
-    grid_period = st.sidebar.selectbox("K线粒度", ["1", "5", "15", "30", "60"],
-                                       index=1, format_func=lambda x: f"{x} 分钟")
-    grid_source = st.sidebar.selectbox("数据源", ["em"],
-                                       index=0,
-                                       format_func=lambda x: {"em": "东方财富 (EM)"}[x],
-                                       help="东方财富提供分钟级 K 线，akshare 目前暂无 Sina 分钟数据")
+    # 标的列表（可扩展）
+    if "grid_symbols" not in st.session_state:
+        st.session_state.grid_symbols = [
+            ("510050", "上证50"), ("510300", "沪深300"), ("510500", "中证500"),
+            ("588000", "科创50"), ("159915", "创业板"), ("159949", "创业板50"),
+            ("159740", "纳指ETF"), ("513100", "纳指"), ("159941", "纳指"),
+            ("513520", "日经ETF"), ("513500", "标普500"),
+            ("512890", "红利低波"), ("515080", "红利低波"),
+            ("518880", "黄金ETF"), ("159985", "豆粕ETF"),
+            ("511380", "可转债"), ("511260", "十年国债"),
+        ]
+    # 从 session_state 恢复自定义标的
+    grid_sym_list = [f"{sym} ({name})" for sym, name in st.session_state.grid_symbols]
+    default_sym_idx = 0
+    saved_sym = _gqp("g_sym", "510050 (上证50)")
+    if saved_sym in grid_sym_list:
+        default_sym_idx = grid_sym_list.index(saved_sym)
+
+    grid_sym_sel = st.sidebar.selectbox("标的", grid_sym_list, index=default_sym_idx,
+                                        key="g_sym_sel",
+                                        help="输入文字搜索，支持键盘上下选择")
+    grid_symbol = grid_sym_sel.split("(")[0].strip()
+
+    with st.sidebar.expander("➕ 添加标的"):
+        new_code = st.text_input("代码", "", key="g_new_code", max_chars=10)
+        new_name = st.text_input("名称", "", key="g_new_name", max_chars=20)
+        if st.button("添加", key="g_add_btn"):
+            code_s = new_code.strip()
+            name_s = new_name.strip()
+            if code_s and name_s:
+                exists = any(s == code_s for s, _ in st.session_state.grid_symbols)
+                if not exists:
+                    st.session_state.grid_symbols.append((code_s, name_s))
+                    st.rerun()
+
+    grid_period = st.sidebar.selectbox("K线粒度", ["daily", "1", "5", "15", "30", "60"],
+                                       index=["daily","1","5","15","30","60"].index(_gqp("g_period", "daily")),
+                                       format_func=lambda x: f"{x} 分钟" if x != "daily" else "日线",
+                                       key="g_period_sel")
+    # 数据源：分钟线只有 EM，日线有 akshare(Sina) 和 EM
+    if grid_period == "daily":
+        grid_source = st.sidebar.selectbox("数据源", ["akshare", "em"],
+                                           index=["akshare","em"].index(_gqp("g_src", "akshare")),
+                                           format_func=lambda x: {"akshare": "AKShare (Sina)",
+                                                                  "em": "东方财富 (EM)"}[x],
+                                           key="g_src_sel")
+    else:
+        grid_source = "em"
+        st.sidebar.caption("分钟线仅支持东方财富 (EM) 数据源")
     grid_type = st.sidebar.selectbox("网格类型", ["arithmetic", "geometric", "volatility"],
-                                     index=0,
+                                     index={"arithmetic": 0, "geometric": 1, "volatility": 2}.get(
+                                         _gqp("g_type", "arithmetic"), 0),
                                      format_func=lambda x: {"arithmetic": "等差网格",
                                                             "geometric": "等比网格",
-                                                            "volatility": "ATR 动态网格"}[x])
-    grid_n = st.sidebar.slider("网格线数", 4, 50, 10,
-                               help="价格区间内划分的网格数量，越多交易越密集")
-    grid_amount = st.sidebar.number_input("每格金额", 1000, 100000, 10000, step=1000,
-                                          help="每条网格线触发时买入/卖出的金额。如每格1万元、10格，总资金约需10万元")
-    grid_max_pos = st.sidebar.slider("最大持仓格数", 1, 30, 10,
-                                     help="最多同时持有几个网格的仓位。例：20格设5，则最多同时持有5格，控制总风险敞口")
-    grid_init_shares = st.sidebar.number_input("初始底仓(股)", 0, 1000000, 0, step=1000,
-                                               help="回测开始时已持有的持仓数量。设底仓后，价格向上时可以先卖")
+                                                            "volatility": "ATR 动态网格"}[x],
+                                     key="g_type_sel")
+    grid_n = st.sidebar.slider("网格线数", 4, 50, int(_gqp("g_n", "10")),
+                               help="价格区间内划分网格数量", key="g_n_slider")
+    grid_amount = st.sidebar.number_input("每格金额", 1000, 100000,
+                                          int(_gqp("g_amt", "10000")), step=1000,
+                                          help="每条网格线触发时买入/卖出的金额",
+                                          key="g_amt_inp")
+    grid_max_pos = st.sidebar.slider("最大持仓格数", 1, 30,
+                                     int(_gqp("g_maxp", "10")),
+                                     help="最多同时持有几个网格的仓位",
+                                     key="g_maxp_slider")
+    grid_init_shares = st.sidebar.number_input("初始底仓(股)", 0, 1000000,
+                                                int(_gqp("g_init", "0")), step=1000,
+                                                help="回测开始时已持有的持仓数量",
+                                                key="g_init_inp")
 
     sb_date_col1_g, sb_date_col2_g = st.sidebar.columns(2)
     with sb_date_col1_g:
-        grid_start = st.date_input("开始", value=pd.Timestamp("2026-01-01"),
+        grid_start = st.date_input("开始", value=pd.Timestamp(_gqp("g_sd", "2026-01-01")),
                                     key="gs_start", format="YYYY-MM-DD",
                                     max_value=pd.Timestamp.today())
     with sb_date_col2_g:
-        grid_end = st.date_input("结束", value=pd.Timestamp.today(),
+        grid_end = st.date_input("结束", value=pd.Timestamp(_gqp("g_ed", pd.Timestamp.today().strftime("%Y-%m-%d"))),
                                   key="gs_end", format="YYYY-MM-DD",
                                   max_value=pd.Timestamp.today())
 
-    comm = st.sidebar.number_input("佣金率", 0.0, 0.01, 0.0003, step=0.0001, format="%.4f",
-                                   help="ETF 万1~万3（0.0001~0.0003），A股印花税万5只收卖出")
-    slip = st.sidebar.number_input("滑点", 0.0, 0.01, 0.001, step=0.0005, format="%.4f",
-                                   help="成交价与网格线之间的偏差。流动性好的ETF设0.001（0.1%），差的设0.002~0.003")
+    comm = st.sidebar.number_input("佣金率", 0.0, 0.01, float(_gqp("g_comm", "0.0003")),
+                                   step=0.0001, format="%.4f",
+                                   help="ETF 万1~万3（0.0001~0.0003），A股印花税万5只收卖出",
+                                   key="g_comm_inp")
+    slip = st.sidebar.number_input("滑点", 0.0, 0.01, float(_gqp("g_slip", "0.001")),
+                                   step=0.0005, format="%.4f",
+                                   help="成交价与网格线之间的偏差。流动性好的ETF设0.001（0.1%）",
+                                   key="g_slip_inp")
+
+    # 持久化到 URL query params
+    st.query_params.update({
+        "g_sym": grid_sym_sel, "g_period": grid_period, "g_src": grid_source,
+        "g_type": grid_type, "g_n": str(grid_n),
+        "g_amt": str(grid_amount), "g_maxp": str(grid_max_pos),
+        "g_init": str(grid_init_shares),
+        "g_sd": str(grid_start), "g_ed": str(grid_end),
+        "g_comm": str(comm), "g_slip": str(slip),
+    })
 
     run_grid_btn = st.sidebar.button("🚀 运行网格回测", type="primary", width='stretch')
 
