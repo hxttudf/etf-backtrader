@@ -795,8 +795,11 @@ if _mode == "网格交易":
         step_label = "每格价差" if grid_type == "arithmetic" else "每格百分比(%)"
         step_fmt = "%.4f" if grid_type == "arithmetic" else "%.2f"
         step_default = 0.05 if grid_type == "arithmetic" else 1.0
+        step_saved = float(_grid_def("g_step", str(step_default)))
+        if step_saved < 0.001:
+            step_saved = step_default
         grid_step = st.sidebar.number_input(step_label, 0.001, 100.0,
-                                             float(_grid_def("g_step", str(step_default))),
+                                             step_saved,
                                              step=0.01, format=step_fmt, key="g_step_inp")
         grid_n = 0
     else:
