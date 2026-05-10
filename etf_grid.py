@@ -351,37 +351,43 @@ class GridEngine:
         }
 
     def get_nav_series(self, df: pd.DataFrame) -> pd.Series:
-        """计算每日净值序列"""
+        """计算每日净值序列（正向构建，起点=1.0）"""
         if self.state is None:
             return pd.Series(dtype=float)
-        total_capital = self.cfg.initial_capital if self.cfg.initial_capital > 0 else (
-            self.cfg.amount_per_grid * min(self.cfg.max_positions, self._compute_n_levels()))
-        # 建一个日期→持仓映射
-        daily_pos = {}
-        daily_cash = {}
-        pos, cash = self.state.position, self.state.cash
-        # 从 trade 记录回溯
-        trade_map = {}  # date -> (new_pos, new_cash)
-        for t in reversed(self.state.trades):
-            trade_map[t.datetime.date()] = (t.quantity, t.amount, t.side)
-        # 从末尾往前遍历
+        cfg = self.cfg
+        n_lvls = self._compute_n_levels()
+        total_capital = cfg.initial_capital if cfg.initial_capital > 0 else (
+            cfg.amount_per_grid * min(cfg.max_positions, n_lvls))
         dates = sorted(set(d.date() for d in df.index))
-        for d in reversed(dates):
-            daily_pos[d] = pos
-            daily_cash[d] = cash
+        if not dates:
+            return pd.Series(dtype=float)
+        # 初始状态
+        first_close = float(df.iloc[0]["close"])
+        pos = cfg.initial_shares
+        cash = total_capital - pos * first_close
+        # 按日期聚合交易（同一天可能有多次）
+        trade_map: dict = {}
+        for t in self.state.trades:
+            d = t.datetime.date()
+            if d not in trade_map:
+                trade_map[d] = [0, 0.0]  # [净持仓变化, 净现金变化]
+            if t.side == "buy":
+                trade_map[d][0] += t.quantity
+                trade_map[d][1] -= t.amount
+            else:
+                trade_map[d][0] -= t.quantity
+                trade_map[d][1] += t.amount
+        # 逐日计算
+        nav_values = {}
+        for d in dates:
             if d in trade_map:
-                qty, amt, side = trade_map[d]
-                if side == "buy":
-                    pos -= qty
-                    cash += amt
-                else:
-                    pos += qty
-                    cash -= amt
-        nav = pd.Series({d: daily_cash[d] + daily_pos[d] * float(
-            df[df.index.date == d]["close"].iloc[-1]) if len(df[df.index.date == d]) > 0 else daily_cash[d]
-                         for d in dates}, name="nav")
-        nav = nav.sort_index() / total_capital
-        return nav
+                qty_chg, cash_chg = trade_map[d]
+                pos += qty_chg
+                cash += cash_chg
+            day_data = df[df.index.date == d]
+            close = float(day_data["close"].iloc[-1]) if len(day_data) > 0 else 0
+            nav_values[d] = (cash + pos * close) / total_capital
+        return pd.Series(nav_values, name="nav").sort_index()
 
     def get_grid_df(self) -> pd.DataFrame:
         """返回网格线列表用于可视化"""

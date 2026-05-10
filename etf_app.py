@@ -974,33 +974,42 @@ if _mode == "网格交易":
                     low=daily['low'], close=daily['close'],
                     name=grid_symbol
                 ))
+                # 网格线：只显示已触发的（已买/已卖），减少密集度
                 for i, (price, bought, sold) in enumerate(engine.state.levels):
-                    color = 'green' if bought else ('red' if sold else 'gray')
+                    if not bought and not sold:
+                        continue
+                    color = '#4CAF50' if bought else '#FF9800'
                     fig2.add_hline(y=price, line_color=color,
-                                   line_dash='dash', opacity=0.5,
+                                   line_dash='dash', opacity=0.4,
                                    annotation_text=f"L{i+1} {price:.3f}")
-                # 买卖标记
+                # 买卖标记（B/S 放在 K 线上下两侧）
                 if trades:
                     buy_dates, buy_prices, sell_dates, sell_prices = [], [], [], []
+                    daily_high = daily['high'].to_dict()
+                    daily_low = daily['low'].to_dict()
                     for t in trades:
                         d = t.datetime.strftime("%Y-%m-%d")
                         if t.side == "buy":
                             buy_dates.append(d)
-                            buy_prices.append(t.price)
+                            # B 放在当日最低价下方
+                            low_px = daily_low.get(pd.Timestamp(d), t.price)
+                            buy_prices.append(low_px * 0.995)
                         else:
                             sell_dates.append(d)
-                            sell_prices.append(t.price)
+                            # S 放在当日最高价上方
+                            high_px = daily_high.get(pd.Timestamp(d), t.price)
+                            sell_prices.append(high_px * 1.005)
                     fig2.add_trace(go.Scatter(
                         x=buy_dates, y=buy_prices, mode='text',
                         text=['B']*len(buy_dates),
                         textfont=dict(color='#1976D2', size=14, family='Arial Black'),
-                        name='买入', hovertemplate='买入 %{y:.3f}<extra></extra>'
+                        name='买入', hovertemplate='B %{y:.3f}<extra></extra>'
                     ))
                     fig2.add_trace(go.Scatter(
                         x=sell_dates, y=sell_prices, mode='text',
                         text=['S']*len(sell_dates),
                         textfont=dict(color='#D32F2F', size=14, family='Arial Black'),
-                        name='卖出', hovertemplate='卖出 %{y:.3f}<extra></extra>'
+                        name='卖出', hovertemplate='S %{y:.3f}<extra></extra>'
                     ))
                 fig2.update_layout(height=450, template='plotly_white',
                                    title=f'{grid_symbol} K 线 + 网格线')
