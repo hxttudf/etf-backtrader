@@ -358,7 +358,8 @@ class GridEngine:
 
         return {
             "总收益": total_return,
-            "交易次数": len([t for t in trades if t.side == "buy"]),
+            "买入次数": len([t for t in trades if t.side == "buy"]),
+            "卖出次数": len([t for t in trades if t.side == "sell"]),
             "胜率": win_rate,
             "最大回撤": dd,
             "初始资金": total_capital,

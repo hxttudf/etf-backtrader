@@ -909,8 +909,8 @@ if _mode == "网格交易":
             mcols[1].metric("初始现金", f"{total_cap:,.0f}")
             mcols[2].metric("总资产", f"{total_asset:,.0f}")
             mcols[3].metric("持仓金额", f"{pos_value:,.0f}")
-            mcols[4].metric("剩余现金", f"{metrics['剩余现金']:,.0f}")
-            mcols[5].metric("买入次数", metrics["交易次数"])
+            mcols[4].metric("买入次数", metrics.get("买入次数", 0))
+            mcols[5].metric("卖出次数", metrics.get("卖出次数", 0))
             mcols[6].metric("胜率", f"{metrics['胜率']:.1%}")
             mcols[7].metric("最大回撤", f"{metrics['最大回撤']:.3%}")
 
