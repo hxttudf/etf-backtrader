@@ -26,8 +26,12 @@ from etf_backtrader import run_backtest_bt, position_dist_bt, STRATEGIES
 from etf_grid import run_grid_backtest, GridConfig
 from etf_grid_data import load_grid_data
 import datetime as _dt
+import json
 
 st.set_page_config(page_title="ETF双动量轮动", layout="wide")
+
+# 网格参数持久化（本地 JSON + URL）
+GRID_CONFIG_PATH = Path(__file__).parent / "etf_grid_config.json"
 
 st.markdown("""
 <style>
@@ -690,7 +694,20 @@ if _mode == "网格交易":
     # 网格交易参数（支持 URL query params 持久化）
     # ═══════════════════════════════════════════════════════
     gq = st.query_params
-    _gqp = lambda k, d: gq[k] if k in gq and gq[k] not in ("NaT", "") else d
+    # 从 JSON 配置文件加载默认值（URL params 优先级更高）
+    _grid_file_cfg = {}
+    if GRID_CONFIG_PATH.exists():
+        try:
+            _grid_file_cfg = json.loads(GRID_CONFIG_PATH.read_text())
+        except Exception:
+            _grid_file_cfg = {}
+    def _grid_def(k: str, default):
+        """先从 URL 读，再从 JSON 读，最后用默认值"""
+        if k in gq and gq[k] not in ("NaT", ""):
+            return gq[k]
+        if k in _grid_file_cfg:
+            return _grid_file_cfg[k]
+        return default
 
     st.sidebar.header("📊 网格参数")
 
@@ -708,7 +725,7 @@ if _mode == "网格交易":
     # 从 session_state 恢复自定义标的
     grid_sym_list = [f"{sym} ({name})" for sym, name in st.session_state.grid_symbols]
     default_sym_idx = 0
-    saved_sym = _gqp("g_sym", "510050 (上证50)")
+    saved_sym = _grid_def("g_sym", "510050 (上证50)")
     if saved_sym in grid_sym_list:
         default_sym_idx = grid_sym_list.index(saved_sym)
 
@@ -730,13 +747,13 @@ if _mode == "网格交易":
                     st.rerun()
 
     grid_period = st.sidebar.selectbox("K线粒度", ["daily", "1", "5", "15", "30", "60"],
-                                       index=["daily","1","5","15","30","60"].index(_gqp("g_period", "daily")),
+                                       index=["daily","1","5","15","30","60"].index(_grid_def("g_period", "daily")),
                                        format_func=lambda x: f"{x} 分钟" if x != "daily" else "日线",
                                        key="g_period_sel")
     # 数据源：分钟线只有 EM，日线有 akshare(Sina) 和 EM
     if grid_period == "daily":
         grid_source = st.sidebar.selectbox("数据源", ["akshare", "em"],
-                                           index=["akshare","em"].index(_gqp("g_src", "akshare")),
+                                           index=["akshare","em"].index(_grid_def("g_src", "akshare")),
                                            format_func=lambda x: {"akshare": "AKShare (Sina)",
                                                                   "em": "东方财富 (EM)"}[x],
                                            key="g_src_sel")
@@ -745,41 +762,41 @@ if _mode == "网格交易":
         st.sidebar.caption("分钟线仅支持东方财富 (EM) 数据源")
     grid_type = st.sidebar.selectbox("网格类型", ["arithmetic", "geometric", "volatility"],
                                      index={"arithmetic": 0, "geometric": 1, "volatility": 2}.get(
-                                         _gqp("g_type", "arithmetic"), 0),
+                                         _grid_def("g_type", "arithmetic"), 0),
                                      format_func=lambda x: {"arithmetic": "等差网格",
                                                             "geometric": "等比网格",
                                                             "volatility": "ATR 动态网格"}[x],
                                      key="g_type_sel")
-    grid_n = st.sidebar.slider("网格线数", 4, 50, int(_gqp("g_n", "10")),
+    grid_n = st.sidebar.slider("网格线数", 4, 50, int(_grid_def("g_n", "10")),
                                help="价格区间内划分网格数量", key="g_n_slider")
     grid_amount = st.sidebar.number_input("每格金额", 1000, 100000,
-                                          int(_gqp("g_amt", "10000")), step=1000,
+                                          int(_grid_def("g_amt", "10000")), step=1000,
                                           help="每条网格线触发时买入/卖出的金额",
                                           key="g_amt_inp")
     grid_max_pos = st.sidebar.slider("最大持仓格数", 1, 30,
-                                     int(_gqp("g_maxp", "10")),
+                                     int(_grid_def("g_maxp", "10")),
                                      help="最多同时持有几个网格的仓位",
                                      key="g_maxp_slider")
     grid_init_shares = st.sidebar.number_input("初始底仓(股)", 0, 1000000,
-                                                int(_gqp("g_init", "0")), step=1000,
+                                                int(_grid_def("g_init", "0")), step=1000,
                                                 help="回测开始时已持有的持仓数量",
                                                 key="g_init_inp")
 
     sb_date_col1_g, sb_date_col2_g = st.sidebar.columns(2)
     with sb_date_col1_g:
-        grid_start = st.date_input("开始", value=pd.Timestamp(_gqp("g_sd", "2026-01-01")),
+        grid_start = st.date_input("开始", value=pd.Timestamp(_grid_def("g_sd", "2026-01-01")),
                                     key="gs_start", format="YYYY-MM-DD",
                                     max_value=pd.Timestamp.today())
     with sb_date_col2_g:
-        grid_end = st.date_input("结束", value=pd.Timestamp(_gqp("g_ed", pd.Timestamp.today().strftime("%Y-%m-%d"))),
+        grid_end = st.date_input("结束", value=pd.Timestamp(_grid_def("g_ed", pd.Timestamp.today().strftime("%Y-%m-%d"))),
                                   key="gs_end", format="YYYY-MM-DD",
                                   max_value=pd.Timestamp.today())
 
-    comm = st.sidebar.number_input("佣金率", 0.0, 0.01, float(_gqp("g_comm", "0.0003")),
+    comm = st.sidebar.number_input("佣金率", 0.0, 0.01, float(_grid_def("g_comm", "0.0003")),
                                    step=0.0001, format="%.4f",
                                    help="ETF 万1~万3（0.0001~0.0003），A股印花税万5只收卖出",
                                    key="g_comm_inp")
-    slip = st.sidebar.number_input("滑点", 0.0, 0.01, float(_gqp("g_slip", "0.001")),
+    slip = st.sidebar.number_input("滑点", 0.0, 0.01, float(_grid_def("g_slip", "0.001")),
                                    step=0.0005, format="%.4f",
                                    help="成交价与网格线之间的偏差。流动性好的ETF设0.001（0.1%）",
                                    key="g_slip_inp")
@@ -795,6 +812,18 @@ if _mode == "网格交易":
     })
 
     run_grid_btn = st.sidebar.button("🚀 运行网格回测", type="primary", width='stretch')
+    if st.sidebar.button("💾 保存配置", width='stretch',
+                         help="保存当前参数到 etf_grid_config.json，远程部署时也适用"):
+        config_data = {
+            "g_sym": grid_sym_sel, "g_period": grid_period, "g_src": grid_source,
+            "g_type": grid_type, "g_n": str(grid_n),
+            "g_amt": str(grid_amount), "g_maxp": str(grid_max_pos),
+            "g_init": str(grid_init_shares),
+            "g_sd": str(grid_start), "g_ed": str(grid_end),
+            "g_comm": str(comm), "g_slip": str(slip),
+        }
+        GRID_CONFIG_PATH.write_text(json.dumps(config_data, ensure_ascii=False, indent=2))
+        st.sidebar.success("✅ 配置已保存")
 
     # ═══════════════════════════════════════════════════════
     # 网格交易主界面
