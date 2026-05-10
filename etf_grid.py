@@ -74,9 +74,9 @@ class GridEngine:
                     self.today_bought = 0
         bp = self._buy_price()
         sp = self._sell_price()
-        # ── 开→高：触发卖出 ──
+        # ── 触发卖出：最高价触及卖出价（含跳空）──
         if self._pending_sell is not None:
-            if o < sp <= h and self._sellable() > 0:
+            if sp <= h and self._sellable() > 0:
                 qty = min(int(cfg.amount_per_grid / sp), self._sellable())
                 if qty > 0:
                     rev = qty * sp * (1 - cfg.commission) - 0.1
