@@ -65,10 +65,6 @@ class GridEngine:
         c = float(ohlc["close"])
         cfg = self.cfg
 
-        # 新一天：基准价 = 昨日收盘价（东方财富"按日涨跌幅"模式）
-        if self.prev_close > 0:
-            self.base_price = self.prev_close
-
         if self.trades and isinstance(dt, pd.Timestamp):
             last_dt = self.trades[-1].datetime
             if isinstance(last_dt, pd.Timestamp) and last_dt.date() < dt.date():
@@ -85,6 +81,7 @@ class GridEngine:
                 self.cash += rev
                 self.position -= qty
                 self.trades.append(Trade(dt, "sell", sp, rev, qty, self._is_t0))
+                self.base_price = sp  # 卖出后基准移到卖出价
                 self._pending_sell = None
 
         # 买入：最低价触及买入价
@@ -97,6 +94,7 @@ class GridEngine:
                     self.position += qty
                     self.today_bought += qty
                     self.trades.append(Trade(dt, "buy", bp, cost, qty, self._is_t0))
+                    self.base_price = bp  # 买入后基准移到买入价
                     self._pending_sell = self._sell_price()
 
         self.prev_close = c
