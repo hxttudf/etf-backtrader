@@ -54,6 +54,7 @@ class GridConfig:
     price_high: float = 0.0
     amount_per_grid: float = 10000.0
     max_positions: int = 10
+    initial_capital: float = 0.0  # 总本金（0=自动按 amount_per_grid*max_positions）
     initial_shares: int = 0     # 初始底仓（股/份）
     commission: float = 0.0003
     slippage: float = 0.001
@@ -141,17 +142,18 @@ class GridEngine:
             prices = calc(cfg.price_low, cfg.price_high, cfg.n_levels, first_price)
 
         levels = [(round(p, 4), False, False) for p in sorted(prices)]
-        init_cash = cfg.amount_per_grid * min(cfg.max_positions, len(levels))
-        # 有底仓：从现金扣除底仓市值，计入持仓
+        # 本金：设了 initial_capital 就用它，否则按 amount_per_grid * max_positions
+        total_capital = cfg.initial_capital if cfg.initial_capital > 0 else (
+            cfg.amount_per_grid * min(cfg.max_positions, len(levels)))
         init_position = cfg.initial_shares
         init_cost = init_position * first_price
         self.state = GridState(
             levels=[list(l) for l in levels],
-            cash=init_cash - init_cost,
+            cash=total_capital - init_cost,
             position=init_position,
             today_bought=0,
             base_price=first_price,
-            total_value=init_cash,
+            total_value=total_capital,
             trades=[],
         )
 
@@ -282,9 +284,10 @@ class GridEngine:
             return {"总收益": 0, "交易次数": 0}
 
         trades = self.state.trades
-        initial_cash = self.cfg.amount_per_grid * min(self.cfg.max_positions, self.cfg.n_levels)
+        total_capital = self.cfg.initial_capital if self.cfg.initial_capital > 0 else (
+            self.cfg.amount_per_grid * min(self.cfg.max_positions, self.cfg.n_levels))
         final_value = self.state.cash + self.state.position * df["close"].iloc[-1]
-        total_return = final_value / initial_cash - 1
+        total_return = final_value / total_capital - 1
 
         # 按交易日计算净值
         dates = sorted(set(t.datetime.date() for t in trades))
@@ -348,6 +351,7 @@ def run_grid_backtest(symbol: str, df: pd.DataFrame,
                       n_levels: int = 10,
                       amount_per_grid: float = 10000.0,
                       max_positions: int = 10,
+                      initial_capital: float = 0.0,
                       initial_shares: int = 0,
                       commission: float = 0.0003,
                       slippage: float = 0.001) -> tuple[list[Trade], dict, GridEngine]:
@@ -378,6 +382,7 @@ def run_grid_backtest(symbol: str, df: pd.DataFrame,
         amount_per_grid=amount_per_grid,
         max_positions=max_positions,
         initial_shares=initial_shares,
+        initial_capital=initial_capital,
         commission=commission,
         slippage=slippage,
     )

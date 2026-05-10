@@ -734,17 +734,35 @@ if _mode == "网格交易":
                                         help="输入文字搜索，支持键盘上下选择")
     grid_symbol = grid_sym_sel.split("(")[0].strip()
 
-    with st.sidebar.expander("➕ 添加标的"):
+    with st.sidebar.expander("📝 管理标的"):
         new_code = st.text_input("代码", "", key="g_new_code", max_chars=10)
         new_name = st.text_input("名称", "", key="g_new_name", max_chars=20)
-        if st.button("添加", key="g_add_btn"):
-            code_s = new_code.strip()
-            name_s = new_name.strip()
-            if code_s and name_s:
-                exists = any(s == code_s for s, _ in st.session_state.grid_symbols)
-                if not exists:
-                    st.session_state.grid_symbols.append((code_s, name_s))
+        c_add, c_del = st.columns(2)
+        with c_add:
+            if st.button("添加", key="g_add_btn", use_container_width=True):
+                code_s = new_code.strip()
+                name_s = new_name.strip()
+                if code_s and name_s:
+                    exists = any(s == code_s for s, _ in st.session_state.grid_symbols)
+                    if not exists:
+                        st.session_state.grid_symbols.append((code_s, name_s))
+                        st.rerun()
+        with c_del:
+            sel_idx = grid_sym_list.index(grid_sym_sel) if grid_sym_sel in grid_sym_list else -1
+            if st.button("删除当前", key="g_del_btn", use_container_width=True):
+                if sel_idx >= 0 and sel_idx < len(st.session_state.grid_symbols):
+                    st.session_state.grid_symbols.pop(sel_idx)
                     st.rerun()
+        # 编辑名称：双击当前标的的名称
+        if grid_sym_list:
+            cur_code = grid_symbol
+            edit_name = st.text_input("修改名称", value=dict(st.session_state.grid_symbols).get(cur_code, ""),
+                                      key="g_edit_name", max_chars=20)
+            if st.button("保存名称", key="g_rename_btn", use_container_width=True):
+                for i, (code, _) in enumerate(st.session_state.grid_symbols):
+                    if code == cur_code:
+                        st.session_state.grid_symbols[i] = (code, edit_name.strip())
+                        st.rerun()
 
     grid_period = st.sidebar.selectbox("K线粒度", ["daily", "1", "5", "15", "30", "60"],
                                        index=["daily","1","5","15","30","60"].index(_grid_def("g_period", "daily")),
@@ -781,6 +799,23 @@ if _mode == "网格交易":
                                                 int(_grid_def("g_init", "0")), step=1000,
                                                 help="回测开始时已持有的持仓数量",
                                                 key="g_init_inp")
+    grid_capital = st.sidebar.number_input("总本金", 0, 10000000,
+                                            int(_grid_def("g_cap", "0")), step=10000,
+                                            help="总资金。0=自动按每格金额×最大持仓格数计算",
+                                            key="g_cap_inp")
+    # 价格区间（默认自动）
+    grid_price_auto = st.sidebar.checkbox("价格区间自动", value=_grid_def("g_pauto", "1") == "1",
+                                          help="取消勾选可手动设置上下界")
+    if not grid_price_auto:
+        gc_low, gc_high = st.sidebar.columns(2)
+        with gc_low:
+            grid_pl = st.number_input("下界", 0.0, 1000.0, float(_grid_def("g_pl", "0")),
+                                      step=0.1, format="%.2f", key="g_pl_inp")
+        with gc_high:
+            grid_ph = st.number_input("上界", 0.0, 10000.0, float(_grid_def("g_ph", "0")),
+                                      step=0.1, format="%.2f", key="g_ph_inp")
+    else:
+        grid_pl = grid_ph = 0.0
 
     sb_date_col1_g, sb_date_col2_g = st.sidebar.columns(2)
     with sb_date_col1_g:
@@ -806,7 +841,9 @@ if _mode == "网格交易":
         "g_sym": grid_sym_sel, "g_period": grid_period, "g_src": grid_source,
         "g_type": grid_type, "g_n": str(grid_n),
         "g_amt": str(grid_amount), "g_maxp": str(grid_max_pos),
-        "g_init": str(grid_init_shares),
+        "g_init": str(grid_init_shares), "g_cap": str(grid_capital),
+        "g_pauto": "1" if grid_price_auto else "0",
+        "g_pl": str(grid_pl), "g_ph": str(grid_ph),
         "g_sd": str(grid_start), "g_ed": str(grid_end),
         "g_comm": str(comm), "g_slip": str(slip),
     })
@@ -818,7 +855,9 @@ if _mode == "网格交易":
             "g_sym": grid_sym_sel, "g_period": grid_period, "g_src": grid_source,
             "g_type": grid_type, "g_n": str(grid_n),
             "g_amt": str(grid_amount), "g_maxp": str(grid_max_pos),
-            "g_init": str(grid_init_shares),
+            "g_init": str(grid_init_shares), "g_cap": str(grid_capital),
+            "g_pauto": "1" if grid_price_auto else "0",
+            "g_pl": str(grid_pl), "g_ph": str(grid_ph),
             "g_sd": str(grid_start), "g_ed": str(grid_end),
             "g_comm": str(comm), "g_slip": str(slip),
         }
@@ -838,10 +877,16 @@ if _mode == "网格交易":
             st.error("❌ 未获取到数据，请检查标的代码或网络")
         else:
             with st.spinner("运行网格回测..."):
+                # 价格区间：手动或自动
+                if grid_price_auto:
+                    pl, ph = float(df["low"].min()), float(df["high"].max())
+                else:
+                    pl, ph = grid_pl, grid_ph
                 trades, metrics, engine = run_grid_backtest(
                     grid_symbol, df, grid_type=grid_type,
                     n_levels=grid_n, amount_per_grid=grid_amount,
                     max_positions=grid_max_pos,
+                    initial_capital=grid_capital,
                     initial_shares=grid_init_shares,
                     commission=comm, slippage=slip,
                 )
@@ -902,10 +947,9 @@ if _mode == "网格交易":
                     'open': 'first', 'high': 'max',
                     'low': 'min', 'close': 'last'
                 }).dropna()
-                daily_idx = daily.index
                 fig2 = go.Figure()
                 fig2.add_trace(go.Candlestick(
-                    x=daily_idx,
+                    x=daily.index,
                     open=daily['open'], high=daily['high'],
                     low=daily['low'], close=daily['close'],
                     name=grid_symbol
@@ -915,6 +959,27 @@ if _mode == "网格交易":
                     fig2.add_hline(y=price, line_color=color,
                                    line_dash='dash', opacity=0.5,
                                    annotation_text=f"L{i+1} {price:.3f}")
+                # 买卖标记
+                if trades:
+                    buy_dates, buy_prices, sell_dates, sell_prices = [], [], [], []
+                    for t in trades:
+                        d = t.datetime.strftime("%Y-%m-%d")
+                        if t.side == "buy":
+                            buy_dates.append(d)
+                            buy_prices.append(t.price)
+                        else:
+                            sell_dates.append(d)
+                            sell_prices.append(t.price)
+                    fig2.add_trace(go.Scatter(
+                        x=buy_dates, y=buy_prices, mode='markers',
+                        marker=dict(symbol='triangle-up', size=12, color='#00cc66'),
+                        name='买入', hovertemplate='买入 %{y:.3f}<extra></extra>'
+                    ))
+                    fig2.add_trace(go.Scatter(
+                        x=sell_dates, y=sell_prices, mode='markers',
+                        marker=dict(symbol='triangle-down', size=12, color='#ff4444'),
+                        name='卖出', hovertemplate='卖出 %{y:.3f}<extra></extra>'
+                    ))
                 fig2.update_layout(height=450, template='plotly_white',
                                    title=f'{grid_symbol} K 线 + 网格线')
                 st.plotly_chart(fig2, width='stretch')
