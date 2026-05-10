@@ -878,6 +878,7 @@ if _mode == "网格交易":
     # 网格交易主界面
     # ═══════════════════════════════════════════════════════
     if run_grid_btn:
+        import plotly.graph_objects as go
         with st.spinner(f"加载 {grid_symbol} 分钟数据..."):
             df = load_grid_data(grid_symbol, period=grid_period,
                                 start_date=str(grid_start), end_date=str(grid_end),
