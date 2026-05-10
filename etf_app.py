@@ -970,13 +970,16 @@ if _mode == "网格交易":
                     increasing_line_color='#E53935', decreasing_line_color='#43A047',
                 ))
                 # 网格线（灰度 >0=显示，0=隐藏，方便排查其他横线干扰）
-                for i, (price, bc, sc) in enumerate(engine.state.levels):
-                    has_activity = bc > 0 or sc > 0 or engine.state.pending_sells.get(i, 0) > 0
-                    if not has_activity:
-                        continue
-                    fig2.add_hline(y=price, line_color='#888888',
-                                   line_width=0.8, opacity=0.35,
-                                   annotation_text=f"L{i+1} {price:.3f}")
+                # 动态基准模型：显示当前买入/卖出触发价
+                bp = engine._buy_price() if hasattr(engine, '_buy_price') else 0
+                sp = engine._sell_price() if hasattr(engine, '_sell_price') else 0
+                pending = getattr(engine, '_pending_sell', None)
+                if bp > 0:
+                    fig2.add_hline(y=bp, line_color='#D32F2F', line_width=1, opacity=0.4,
+                                   annotation_text=f"买入触发 {bp:.3f}")
+                if pending is not None:
+                    fig2.add_hline(y=sp, line_color='#1976D2', line_width=1, opacity=0.4,
+                                   annotation_text=f"卖出触发 {sp:.3f}")
                 # 买卖标记：圆点在实际成交价（对齐网格线），B/S 在当天极值外侧
                 if trades:
                     buy_dates, buy_ps, sell_dates, sell_ps = [], [], [], []
