@@ -889,15 +889,16 @@ if _mode == "网格交易":
             with st.spinner("运行网格回测..."):
                 trades, metrics, engine = run_grid_backtest(
                     grid_symbol, df, grid_type=grid_type,
-                    n_levels=grid_n, step_value=grid_step, amount_per_grid=grid_amount,
+                    step_value=grid_step, amount_per_grid=grid_amount,
                     max_positions=grid_max_pos,
                     initial_capital=grid_capital,
-                    initial_shares=grid_init_shares,
                     base_price=grid_base_price,
                     commission=comm, slippage=slip,
                 )
 
-            st.subheader(f"网格回测: {grid_symbol}  |  {grid_start} ~ {grid_end}")
+            from etf_grid import _is_t0
+            is_t0 = _is_t0(grid_symbol)
+            st.subheader(f"网格回测: {grid_symbol}  |  {grid_start} ~ {grid_end}  |  {'T+0' if is_t0 else 'T+1'}")
 
             # 指标卡片
             total_cap = grid_capital if grid_capital > 0 else grid_n * grid_amount if grid_n > 0 else grid_amount * grid_max_pos
@@ -926,7 +927,6 @@ if _mode == "网格交易":
                         "价格": f"{t.price:.4f}",
                         "金额": f"{t.amount:.0f}",
                         "份额": t.quantity,
-                        "网格": f"L{t.grid_idx+1}",
                     })
                 df_trades = pd.DataFrame(trade_rows)
                 st.dataframe(df_trades, hide_index=True, width='stretch', height=300)
