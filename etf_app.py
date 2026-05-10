@@ -23,6 +23,8 @@ from etf_data import (DEFAULT_CONFIG, calc_indicators, load_config, load_prices,
                         load_open_prices, load_midday_prices, load_afternoon_open_prices,
                         midday_data_available)
 from etf_backtrader import run_backtest_bt, position_dist_bt, STRATEGIES
+from etf_grid import run_grid_backtest, GridConfig
+from etf_grid_data import load_grid_data
 import datetime as _dt
 
 st.set_page_config(page_title="ETF双动量轮动", layout="wide")
@@ -678,7 +680,140 @@ if st.session_state.pop("_rerun_sidebar", False):
 
 cfg = st.session_state.cfg
 
+# ── 页面模式切换 ─────────────────────────────────────────
+_mode = st.sidebar.radio("模式", ["双动量轮动", "网格交易"], horizontal=True, key="app_mode")
+
 # ── Sidebar ──────────────────────────────────────────────
+
+if _mode == "网格交易":
+    # ═══════════════════════════════════════════════════════
+    # 网格交易参数
+    # ═══════════════════════════════════════════════════════
+    st.sidebar.header("📊 网格参数")
+
+    grid_symbol = st.sidebar.text_input("标的代码", value="510050",
+                                        help="ETF 或个股代码")
+    grid_period = st.sidebar.selectbox("K线粒度", ["1", "5", "15", "30", "60"],
+                                       index=1, format_func=lambda x: f"{x} 分钟")
+    grid_type = st.sidebar.selectbox("网格类型", ["arithmetic", "geometric", "volatility"],
+                                     index=0,
+                                     format_func=lambda x: {"arithmetic": "等差网格",
+                                                            "geometric": "等比网格",
+                                                            "volatility": "ATR 动态网格"}[x])
+    grid_n = st.sidebar.slider("网格线数", 4, 50, 10)
+    grid_amount = st.sidebar.number_input("每格金额", 1000, 100000, 10000, step=1000)
+    grid_max_pos = st.sidebar.slider("最大持仓格数", 1, 30, 10)
+
+    sb_date_col1_g, sb_date_col2_g = st.sidebar.columns(2)
+    with sb_date_col1_g:
+        grid_start = st.date_input("开始", value=pd.Timestamp("2026-01-01"),
+                                    key="gs_start", format="YYYY-MM-DD",
+                                    max_value=pd.Timestamp.today())
+    with sb_date_col2_g:
+        grid_end = st.date_input("结束", value=pd.Timestamp.today(),
+                                  key="gs_end", format="YYYY-MM-DD",
+                                  max_value=pd.Timestamp.today())
+
+    comm = st.sidebar.number_input("佣金率", 0.0, 0.01, 0.0003, step=0.0001, format="%.4f")
+    slip = st.sidebar.number_input("滑点", 0.0, 0.01, 0.001, step=0.0005, format="%.4f")
+
+    run_grid_btn = st.sidebar.button("🚀 运行网格回测", type="primary", width='stretch')
+
+    # ═══════════════════════════════════════════════════════
+    # 网格交易主界面
+    # ═══════════════════════════════════════════════════════
+    if run_grid_btn:
+        with st.spinner(f"加载 {grid_symbol} 分钟数据..."):
+            df = load_grid_data(grid_symbol, period=grid_period,
+                                start_date=str(grid_start), end_date=str(grid_end))
+
+        if len(df) == 0:
+            st.error("❌ 未获取到数据，请检查标的代码或网络")
+        else:
+            with st.spinner("运行网格回测..."):
+                trades, metrics, engine = run_grid_backtest(
+                    grid_symbol, df, grid_type=grid_type,
+                    n_levels=grid_n, amount_per_grid=grid_amount,
+                    max_positions=grid_max_pos, commission=comm, slippage=slip,
+                )
+
+            st.subheader(f"网格回测: {grid_symbol}  |  {grid_start} ~ {grid_end}")
+
+            # 指标卡片
+            mcols = st.columns(5)
+            mcols[0].metric("总收益", f"{metrics['总收益']:.3%}")
+            mcols[1].metric("交易次数", metrics["交易次数"])
+            mcols[2].metric("胜率", f"{metrics['胜率']:.1%}")
+            mcols[3].metric("最大回撤", f"{metrics['最大回撤']:.3%}")
+            mcols[4].metric("剩余现金", f"{metrics['剩余现金']:.0f}")
+
+            # 交易明细
+            st.divider()
+            st.markdown("### 📋 交易明细")
+            if trades:
+                trade_rows = []
+                for t in trades:
+                    trade_rows.append({
+                        "时间": t.datetime.strftime("%m-%d %H:%M"),
+                        "方向": "🟢 买入" if t.side == "buy" else "🔴 卖出",
+                        "价格": f"{t.price:.4f}",
+                        "金额": f"{t.amount:.0f}",
+                        "份额": t.quantity,
+                        "网格": f"L{t.grid_idx+1}",
+                    })
+                df_trades = pd.DataFrame(trade_rows)
+                st.dataframe(df_trades, hide_index=True, width='stretch', height=300)
+
+            # 网格线
+            st.divider()
+            st.markdown("### 🎯 网格线")
+            grid_df = engine.get_grid_df()
+            st.dataframe(grid_df, hide_index=True, width='content')
+
+            # 净值图
+            st.divider()
+            st.markdown("### 📈 净值曲线")
+            if len(trades) > 0:
+                import plotly.graph_objects as go
+                nav_series = pd.Series(metrics['最终资产'], index=[pd.Timestamp(grid_end)])
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=nav_series.index, y=nav_series.values,
+                    mode='lines+markers', name='网格策略'
+                ))
+                fig.update_layout(height=400, template='plotly_white',
+                                  title=f'{grid_symbol} 网格策略净值')
+                st.plotly_chart(fig, width='stretch')
+
+            # 价格+K线图
+            st.divider()
+            st.markdown("### 📊 价格走势 + 网格线")
+            if len(df) > 0:
+                daily = df.resample('D').agg({
+                    'open': 'first', 'high': 'max',
+                    'low': 'min', 'close': 'last'
+                }).dropna()
+                daily_idx = daily.index
+                fig2 = go.Figure()
+                fig2.add_trace(go.Candlestick(
+                    x=daily_idx,
+                    open=daily['open'], high=daily['high'],
+                    low=daily['low'], close=daily['close'],
+                    name=grid_symbol
+                ))
+                for i, (price, bought, sold) in enumerate(engine.state.levels):
+                    color = 'green' if bought else ('red' if sold else 'gray')
+                    fig2.add_hline(y=price, line_color=color,
+                                   line_dash='dash', opacity=0.5,
+                                   annotation_text=f"L{i+1} {price:.3f}")
+                fig2.update_layout(height=450, template='plotly_white',
+                                   title=f'{grid_symbol} K 线 + 网格线')
+                st.plotly_chart(fig2, width='stretch')
+
+    st.stop()  # 网格模式下不执行动量逻辑
+
+
+# ── 双动量轮动 ──────────────────────────────────────────
 st.sidebar.header("📊 回测参数")
 
 # ── Restore from URL query params (survives browser refresh) ──
