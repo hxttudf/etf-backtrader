@@ -901,15 +901,18 @@ if _mode == "网格交易":
 
             # 指标卡片
             total_cap = grid_capital if grid_capital > 0 else grid_n * grid_amount if grid_n > 0 else grid_amount * grid_max_pos
-            total_asset = metrics['剩余现金'] + metrics['持仓份额'] * float(df["close"].iloc[-1]) if len(df) > 0 else metrics['剩余现金']
-            mcols = st.columns(7)
+            last_close = float(df["close"].iloc[-1]) if len(df) > 0 else 0
+            pos_value = metrics['持仓份额'] * last_close
+            total_asset = metrics['剩余现金'] + pos_value
+            mcols = st.columns(8)
             mcols[0].metric("总收益", f"{metrics['总收益']:.3%}")
             mcols[1].metric("初始现金", f"{total_cap:,.0f}")
             mcols[2].metric("总资产", f"{total_asset:,.0f}")
-            mcols[3].metric("剩余现金", f"{metrics['剩余现金']:,.0f}")
-            mcols[4].metric("交易次数", metrics["交易次数"])
-            mcols[5].metric("胜率", f"{metrics['胜率']:.1%}")
-            mcols[6].metric("最大回撤", f"{metrics['最大回撤']:.3%}")
+            mcols[3].metric("持仓金额", f"{pos_value:,.0f}")
+            mcols[4].metric("剩余现金", f"{metrics['剩余现金']:,.0f}")
+            mcols[5].metric("交易次数", metrics["交易次数"])
+            mcols[6].metric("胜率", f"{metrics['胜率']:.1%}")
+            mcols[7].metric("最大回撤", f"{metrics['最大回撤']:.3%}")
 
             # 交易明细
             st.divider()
