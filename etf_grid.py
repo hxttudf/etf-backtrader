@@ -210,14 +210,15 @@ class GridEngine:
             last_dt = s.trades[-1].datetime
             if isinstance(last_dt, pd.Timestamp) and last_dt.date() < dt.date():
                 s.today_bought = 0
-        # 开→高：向上穿线 → 卖出待卖
+        # 开→高：向上穿线 → 卖出（处理高于开盘的价位）
         for i in range(len(prices)):
             if o < prices[i] <= h and s.pending_sells.get(i, 0) > 0:
                 self._sell_at(i, prices[i], dt)
-        # 高→低：向下穿线 → 买入
+        # 高→低：向下穿线 → 买入（只处理低于开盘的，高于的在上步已处理）
         for i in range(len(prices)):
-            if l <= prices[i] < h:
-                self._buy_at(i, prices[i], dt)
+            lvl = prices[i]
+            if l <= lvl < o:  # 只买开盘价以下的（开盘以上的在上升段只卖不买）
+                self._buy_at(i, lvl, dt)
 
     def run(self, df: pd.DataFrame) -> list[Trade]:
         if len(df) == 0:
