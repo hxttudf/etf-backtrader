@@ -734,7 +734,7 @@ if _mode == "网格交易":
                                         help="输入文字搜索，支持键盘上下选择")
     grid_symbol = grid_sym_sel.split("(")[0].strip()
 
-    with st.sidebar.expander("📝 管理标的", expanded=True):
+    with st.sidebar.expander("📝 管理标的", expanded=False):
         # 添加
         st.markdown("**添加**")
         ac1, ac2 = st.columns(2)
@@ -901,13 +901,15 @@ if _mode == "网格交易":
 
             # 指标卡片
             total_cap = grid_capital if grid_capital > 0 else grid_n * grid_amount if grid_n > 0 else grid_amount * grid_max_pos
-            mcols = st.columns(6)
+            total_asset = metrics['剩余现金'] + metrics['持仓份额'] * float(df["close"].iloc[-1]) if len(df) > 0 else metrics['剩余现金']
+            mcols = st.columns(7)
             mcols[0].metric("总收益", f"{metrics['总收益']:.3%}")
             mcols[1].metric("初始现金", f"{total_cap:,.0f}")
-            mcols[2].metric("剩余现金", f"{metrics['剩余现金']:,.0f}")
-            mcols[3].metric("交易次数", metrics["交易次数"])
-            mcols[4].metric("胜率", f"{metrics['胜率']:.1%}")
-            mcols[5].metric("最大回撤", f"{metrics['最大回撤']:.3%}")
+            mcols[2].metric("总资产", f"{total_asset:,.0f}")
+            mcols[3].metric("剩余现金", f"{metrics['剩余现金']:,.0f}")
+            mcols[4].metric("交易次数", metrics["交易次数"])
+            mcols[5].metric("胜率", f"{metrics['胜率']:.1%}")
+            mcols[6].metric("最大回撤", f"{metrics['最大回撤']:.3%}")
 
             # 交易明细
             st.divider()
@@ -926,16 +928,11 @@ if _mode == "网格交易":
                 df_trades = pd.DataFrame(trade_rows)
                 st.dataframe(df_trades, hide_index=True, width='stretch', height=300)
 
-            # 网格线
-            st.divider()
-            st.markdown("### 🎯 网格线状态")
-            st.caption("每条网格线在回测期间的触达状态：已买=价格跌到此线时买入，已卖=价格涨到此线时卖出，待触=从未到达")
-            grid_df = engine.get_grid_df()
-            st.dataframe(grid_df, hide_index=True, width='content')
 
             # 净值图
             st.divider()
             st.markdown("### 📈 净值曲线")
+            st.caption("策略总资产÷初始本金。起点=1.0(100%)，>1=盈利，<1=亏损。每笔下买单消耗现金，每笔卖单回收现金+利润，曲线反映账户整体价值变化")
             nav_series = engine.get_nav_series(df)
             if len(nav_series) > 1:
                 import plotly.graph_objects as go
@@ -945,10 +942,12 @@ if _mode == "网格交易":
                     mode='lines', name='网格策略',
                     line=dict(color='#2196F3', width=2)
                 ))
+                final = nav_series.iloc[-1]
                 fig.add_hline(y=1.0, line_color='gray', line_dash='dot', opacity=0.5)
+                fig.add_hline(y=final, line_color='#2196F3', line_dash='dash', opacity=0.3)
                 fig.update_layout(height=400, template='plotly_white',
                                   yaxis_tickformat='.2%',
-                                  title=f'{grid_symbol} 网格策略净值')
+                                  title=f'{grid_symbol} 网格策略净值 (最终: {final:.2%})')
                 st.plotly_chart(fig, width='stretch')
 
             # 价格+K线图
@@ -964,7 +963,8 @@ if _mode == "网格交易":
                     x=daily.index,
                     open=daily['open'], high=daily['high'],
                     low=daily['low'], close=daily['close'],
-                    name=grid_symbol
+                    name=grid_symbol,
+                    increasing_line_color='#E53935', decreasing_line_color='#43A047',
                 ))
                 # 网格线：灰色细实线（已触发=实心，未触发=虚线，稍有区分）
                 for i, (price, bought, sold) in enumerate(engine.state.levels):

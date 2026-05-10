@@ -255,12 +255,18 @@ class GridEngine:
         s.trades.append(Trade(dt, "sell", price, net_revenue, quantity, idx))
 
     def _process_bar(self, ohlc: pd.Series, dt: pd.Timestamp):
-        """处理一根 K 线：按 开→高→低→收 路径检测穿越"""
+        """处理一根 K 线：按 开→高→低→收 路径检测穿越
+
+        价格路径假设：
+          开盘 → 最高（先涨）→ 最低（后跌）→ 收盘
+        向上穿越网格线 → 卖出（卖高）
+        向下穿越网格线 → 买入（买低）
+        """
         s = self.state
         if s is None:
             return
 
-        o, h, l, c = ohlc["open"], ohlc["high"], ohlc["low"], ohlc["close"]
+        o, h, l = ohlc["open"], ohlc["high"], ohlc["low"]
         prices = [l[0] for l in s.levels]
 
         # 新的一天 → 重置 today_bought
@@ -270,27 +276,17 @@ class GridEngine:
             if last_trade is not None and last_trade.date() < date_key:
                 s.today_bought = 0
 
-        # ── open → high：向上检测 ──
-        current = o
-        direction = 1 if h > o else -1
-        if direction > 0:
-            for i in range(len(prices)):
-                if prices[i] > current and prices[i] <= h and not s.levels[i][1]:
-                    self._try_buy(prices[i], i, dt)
-        else:
-            for i in reversed(range(len(prices))):
-                if prices[i] < current and prices[i] >= h and not s.levels[i][2]:
-                    self._try_sell(prices[i], i, dt)
-
-        # ── high → low：先上后下 ──
+        # ── open → high：向上走 → 触发卖出 ──
         for i in reversed(range(len(prices))):
-            if prices[i] < h and prices[i] >= l and not s.levels[i][2]:
-                if s.levels[i][1]:
-                    self._try_sell(prices[i], i, dt)
+            p = prices[i]
+            if p > o and p <= h and s.levels[i][1] and not s.levels[i][2]:
+                self._try_sell(p, i, dt)
+
+        # ── high → low：向下走 → 触发买入 ──
         for i in range(len(prices)):
-            if prices[i] > l and prices[i] <= h and not s.levels[i][1]:
-                if not s.levels[i][1]:
-                    self._try_buy(prices[i], i, dt)
+            p = prices[i]
+            if p < h and p >= l and not s.levels[i][1]:
+                self._try_buy(p, i, dt)
 
     def run(self, df: pd.DataFrame) -> list[Trade]:
         """运行回测
