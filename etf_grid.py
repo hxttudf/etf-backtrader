@@ -62,7 +62,6 @@ class GridEngine:
 
     def _process_bar(self, ohlc, dt):
         o, h, l = float(ohlc["open"]), float(ohlc["high"]), float(ohlc["low"])
-        c = float(ohlc["close"])
         cfg = self.cfg
 
         if self.trades and isinstance(dt, pd.Timestamp):
@@ -73,7 +72,7 @@ class GridEngine:
         bp = self._buy_price()
         sp = self._sell_price()
 
-        # 卖出：最高价触及卖出价
+        # 卖出：最高价触及卖出价（只要有可卖持仓且有待卖信号）
         if self._pending_sell is not None and sp <= h and self._sellable() > 0:
             qty = min(int(cfg.amount_per_grid / sp), self._sellable())
             if qty > 0:
@@ -81,12 +80,13 @@ class GridEngine:
                 self.cash += rev
                 self.position -= qty
                 self.trades.append(Trade(dt, "sell", sp, rev, qty, self._is_t0))
-                self.base_price = sp  # 卖出后基准移到卖出价
-                self._pending_sell = None
+                self.base_price = sp               # 基准移到卖出价
+                self._pending_sell = self._sell_price()  # ← 关键：立即设新的待卖
 
-        # 买入：最低价触及买入价
-        if self._pending_sell is None and l <= bp:
-            qty = int(cfg.amount_per_grid / (bp * (1 + cfg.slippage)))
+        # 买入：最低价触及买入价（有待卖但没持仓或现金足够）
+        if l <= bp and self.position < cfg.max_positions:
+            qty = min(int(cfg.amount_per_grid / (bp * (1 + cfg.slippage))),
+                      cfg.max_positions - self.position)
             if qty > 0:
                 cost = qty * bp * (1 + cfg.commission) + 0.1
                 if self.cash >= cost:
@@ -94,10 +94,8 @@ class GridEngine:
                     self.position += qty
                     self.today_bought += qty
                     self.trades.append(Trade(dt, "buy", bp, cost, qty, self._is_t0))
-                    self.base_price = bp  # 买入后基准移到买入价
-                    self._pending_sell = self._sell_price()
-
-        self.prev_close = c
+                    self.base_price = bp               # 基准移到买入价
+                    self._pending_sell = self._sell_price()  # 新待卖
 
     def run(self, df) -> list:
         if len(df) == 0:
