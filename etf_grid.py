@@ -115,7 +115,9 @@ class GridEngine:
 
     def get_metrics(self, df) -> dict:
         if not self.trades:
-            return {"总收益": 0, "买入次数": 0, "卖出次数": 0, "持仓份额": 0, "剩余现金": self.cash}
+            return {"总收益": 0, "买入次数": 0, "卖出次数": 0, "胜率": 0,
+                    "最大回撤": 0, "持仓份额": 0, "剩余现金": self.cash,
+                    "初始资金": self.cash, "最终资产": self.cash}
         cap = self.cfg.initial_capital if self.cfg.initial_capital > 0 else self.cfg.amount_per_grid * self.cfg.max_positions
         fv = self.cash + self.position * float(df["close"].iloc[-1])
         buys = [t for t in self.trades if t.side == "buy"]
