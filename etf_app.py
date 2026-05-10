@@ -969,9 +969,10 @@ if _mode == "网格交易":
                     name=grid_symbol,
                     increasing_line_color='#E53935', decreasing_line_color='#43A047',
                 ))
-                # 网格线：灰色细实线（已触发=实心，未触发=虚线，稍有区分）
-                for i, (price, bought, sold) in enumerate(engine.state.levels):
-                    if not bought and not sold:
+                # 网格线（灰度 >0=显示，0=隐藏，方便排查其他横线干扰）
+                for i, (price, bc, sc) in enumerate(engine.state.levels):
+                    has_activity = bc > 0 or sc > 0 or engine.state.pending_sells.get(i, 0) > 0
+                    if not has_activity:
                         continue
                     fig2.add_hline(y=price, line_color='#888888',
                                    line_width=0.8, opacity=0.35,
@@ -1019,6 +1020,7 @@ if _mode == "网格交易":
                     ))
                 fig2.update_layout(height=600, template='plotly_white',
                                    title=f'{grid_symbol} K 线 + 网格线')
+                fig2.update_yaxes(showgrid=False)
                 st.plotly_chart(fig2, width='stretch')
 
     st.stop()  # 网格模式下不执行动量逻辑

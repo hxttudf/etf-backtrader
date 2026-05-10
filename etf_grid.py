@@ -1,11 +1,12 @@
-"""网格交易引擎 — 纯 pandas 实现，无 backtrader 依赖
+"""网格交易引擎 — 纯 pandas 实现
 
-支持 3 种网格类型（等差/等比/ATR 动态），逐 K 线高精度穿越检测，
-严格 A 股 T+1 规则。
+核心逻辑（东方财富网格模型）：
+  价格向下穿越 L_i → 买入, 在 L_{i+1} 设待卖
+  价格向上穿越 L_i → 如果有待卖, 卖出（平上一格的仓，赚相邻两格差价）
 
 参考：
-  - yansongwel/etf-quant: Signal 模型、T+1 执行
-  - jorben/grider: ArithmeticGridCalculator / GeometricGridCalculator
+  - yansongwel/etf-quant: Signal 模型
+  - jorben/grider: 网格计算器
 """
 
 from dataclasses import dataclass, field
@@ -15,30 +16,26 @@ import math
 import numpy as np
 import pandas as pd
 
-# ── 网格类型 ──────────────────────────────────────────────────
-
 GridType = Literal["arithmetic", "geometric", "volatility"]
 
-
-# ── 数据模型 ──────────────────────────────────────────────────
 
 @dataclass(frozen=True)
 class Trade:
     datetime: pd.Timestamp
-    side: str          # "buy" | "sell"
+    side: str           # "buy" | "sell"
     price: float
-    amount: float      # 成交金额
-    quantity: int      # 份额
-    grid_idx: int      # 触发的网格索引
+    amount: float
+    quantity: int
+    grid_idx: int       # buy: 买入格; sell: 平仓的买入格
 
 
 @dataclass
 class GridState:
-    """网格运行时状态"""
-    levels: list       # [(price, bought, sold), ...]
+    levels: list           # [(price, buy_count, sell_count), ...]
+    pending_sells: dict    # level_idx -> 待卖数（在 idx 格卖出 idx-1 的买入）
     cash: float
-    position: int      # 总持仓
-    today_bought: int  # 今日买入（T+1 约束）
+    position: int
+    today_bought: int
     base_price: float
     total_value: float
     trades: list = field(default_factory=list)
@@ -46,66 +43,47 @@ class GridState:
 
 @dataclass
 class GridConfig:
-    """网格配置"""
     symbol: str
     grid_type: GridType = "arithmetic"
-    n_levels: int = 10        # 网格线数（step_value=0 时使用）
-    step_value: float = 0.0   # 每格步长：价差(arithmetic)或百分比(geometric)。设>0时覆盖n_levels
-    price_low: float = 0.0    # 0 = 自动从数据计算
-    price_high: float = 0.0   # 0 = 自动从数据计算
-    base_price: float = 0.0   # 基准价（0=使用首日收盘）。设>0时 grid 以此为中心展开
+    n_levels: int = 10
+    step_value: float = 0.0
+    price_low: float = 0.0
+    price_high: float = 0.0
+    base_price: float = 0.0
     amount_per_grid: float = 10000.0
     max_positions: int = 10
-    initial_capital: float = 0.0  # 总本金（0=自动按 amount_per_grid*max_positions）
-    initial_shares: int = 0     # 初始底仓（股/份）
+    initial_capital: float = 0.0
+    initial_shares: int = 0
     commission: float = 0.0003
     slippage: float = 0.001
     atr_period: int = 20
     atr_multiplier: float = 2.0
 
 
-# ── 网格计算器 ──────────────────────────────────────────────
-
-def arithmetic_levels(price_low: float, price_high: float,
-                      n_levels: int, base_price: float) -> list[float]:
-    """等差网格：每格固定差价"""
-    step = (price_high - price_low) / (n_levels - 1) if n_levels > 1 else 0.01
-    prices = [price_low + i * step for i in range(n_levels)]
-    return prices
+def arithmetic_levels(price_low, price_high, n_levels, base_price):
+    step = (price_high - price_low) / max(n_levels - 1, 1)
+    return [price_low + i * step for i in range(n_levels)]
 
 
-def geometric_levels(price_low: float, price_high: float,
-                     n_levels: int, base_price: float) -> list[float]:
-    """等比网格：每格固定百分比"""
+def geometric_levels(price_low, price_high, n_levels, base_price):
     if price_low <= 0 or price_high <= 0:
         return arithmetic_levels(price_low, price_high, n_levels, base_price)
     ratio = (price_high / price_low) ** (1 / max(n_levels - 1, 1))
-    prices = [price_low * (ratio ** i) for i in range(n_levels)]
-    return prices
+    return [price_low * (ratio ** i) for i in range(n_levels)]
 
 
-def volatility_levels(price_low: float, price_high: float,
-                      n_levels: int, base_price: float,
-                      df: pd.DataFrame | None = None,
-                      atr_period: int = 20,
-                      atr_multiplier: float = 2.0) -> list[float]:
-    """ATR 动态网格：格距 = ATR × 倍数"""
+def volatility_levels(price_low, price_high, n_levels, base_price,
+                      df=None, atr_period=20, atr_multiplier=2.0):
     if df is None or len(df) < atr_period + 1:
         return arithmetic_levels(price_low, price_high, n_levels, base_price)
-
-    # 计算 ATR
     high, low, close = df["high"].values, df["low"].values, df["close"].values
     tr = np.maximum(high[1:] - low[1:],
                     np.abs(high[1:] - close[:-1]),
                     np.abs(low[1:] - close[:-1]))
     atr = np.mean(tr[-atr_period:]) if len(tr) >= atr_period else np.mean(tr)
     step = atr * atr_multiplier
-
-    # 以 base_price 为中心，上下展开
-    half_range = step * (n_levels // 2)
     prices = [base_price + (i - n_levels // 2) * step for i in range(n_levels)]
     prices = [p for p in prices if price_low <= p <= price_high]
-    # 如果展开不够，补齐
     while len(prices) < n_levels:
         if prices[0] > price_low:
             prices.insert(0, prices[0] - step)
@@ -123,17 +101,14 @@ GRID_CALCULATORS = {
 }
 
 
-# ── 网格引擎 ──────────────────────────────────────────────
-
 class GridEngine:
-    """网格交易回测引擎"""
+    """网格交易回测引擎（东方财富模型）"""
 
     def __init__(self, config: GridConfig):
         self.cfg = config
         self.state: GridState | None = None
 
     def _compute_n_levels(self) -> int:
-        """根据 step_value 或 n_levels 计算网格线数"""
         cfg = self.cfg
         if cfg.step_value > 0 and cfg.price_high > cfg.price_low:
             if cfg.grid_type == "geometric":
@@ -145,11 +120,8 @@ class GridEngine:
         return cfg.n_levels
 
     def _init_state(self, first_price: float, df: pd.DataFrame | None = None):
-        """初始化网格和状态"""
         cfg = self.cfg
         n_levels = self._compute_n_levels()
-
-        # 价格区间：base_price > 0 时以此为中心展开，否则用数据 min/max
         if cfg.base_price > 0:
             bp = cfg.base_price
             if cfg.grid_type == "geometric" and cfg.step_value > 0:
@@ -167,300 +139,185 @@ class GridEngine:
         else:
             pl = cfg.price_low if cfg.price_low > 0 else (float(df["low"].min()) if df is not None else first_price * 0.9)
             ph = cfg.price_high if cfg.price_high > 0 else (float(df["high"].max()) if df is not None else first_price * 1.1)
-
         calc = GRID_CALCULATORS[cfg.grid_type]
         if cfg.grid_type == "volatility":
-            prices = calc(pl, ph, n_levels, first_price,
-                          df=df, atr_period=cfg.atr_period, atr_multiplier=cfg.atr_multiplier)
+            prices = calc(pl, ph, n_levels, first_price, df=df,
+                          atr_period=cfg.atr_period, atr_multiplier=cfg.atr_multiplier)
         else:
             prices = calc(pl, ph, n_levels, first_price)
-
-        levels = [(round(p, 4), False, False) for p in sorted(prices)]
-        # 本金：设了 initial_capital 就用它，否则按 amount_per_grid * max_positions
+        levels = [[round(p, 4), 0, 0] for p in sorted(prices)]
         total_capital = cfg.initial_capital if cfg.initial_capital > 0 else (
-            cfg.amount_per_grid * min(cfg.max_positions, len(levels)))
-        init_position = cfg.initial_shares
-        init_cost = init_position * first_price
+            cfg.amount_per_grid * min(cfg.max_positions, n_levels))
+        init_cost = cfg.initial_shares * first_price
         self.state = GridState(
-            levels=[list(l) for l in levels],
-            cash=total_capital - init_cost,
-            position=init_position,
-            today_bought=0,
-            base_price=first_price,
-            total_value=total_capital,
-            trades=[],
+            levels=levels, cash=total_capital - init_cost,
+            position=cfg.initial_shares, today_bought=0,
+            base_price=first_price, total_value=total_capital,
+            pending_sells={}, trades=[],
         )
 
-    def _find_grid_idx(self, price: float) -> int:
-        """找到价格所在的网格区间索引"""
-        prices = [l[0] for l in self.state.levels]
-        for i in range(len(prices)):
-            if price < prices[i]:
-                return i
-        return len(prices) - 1
-
-    def _try_buy(self, price: float, idx: int, dt: pd.Timestamp):
-        """在指定网格线买入"""
+    def _buy_at(self, idx: int, price: float, dt: pd.Timestamp):
+        """在 L_idx 买入，设待卖于 L_{idx+1}"""
         s = self.state
         cfg = self.cfg
-        _, bought, _ = s.levels[idx]
-        if bought:
+        if sum(s.pending_sells.values()) >= cfg.max_positions:
             return
         cost = cfg.amount_per_grid
-        quantity = int(cost / (price * (1 + cfg.slippage)))
-        if quantity <= 0:
+        qty = int(cost / (price * (1 + cfg.slippage)))
+        if qty <= 0:
             return
-        actual_cost = quantity * price
-        commission = max(actual_cost * cfg.commission, 0.1)
-        total_cost = actual_cost + commission
-
-        if s.cash < total_cost:
+        total = qty * price * (1 + cfg.commission) + 0.1
+        if s.cash < total:
             return
-
-        s.cash -= total_cost
-        s.position += quantity
-        s.today_bought += quantity
-        s.levels[idx][1] = True  # marked bought
+        s.cash -= total
+        s.position += qty
+        s.today_bought += qty
+        s.levels[idx][1] += 1
         s.total_value = s.cash + s.position * price
         s.base_price = price
-        s.trades.append(Trade(dt, "buy", price, total_cost, quantity, idx))
+        s.trades.append(Trade(dt, "buy", price, total, qty, idx))
+        if idx + 1 < len(s.levels):
+            s.pending_sells[idx + 1] = s.pending_sells.get(idx + 1, 0) + 1
 
-    def _try_sell(self, price: float, idx: int, dt: pd.Timestamp):
-        """在指定网格线卖出"""
+    def _sell_at(self, idx: int, price: float, dt: pd.Timestamp):
+        """在 L_idx 卖出（平 L_{idx-1} 的买入）"""
         s = self.state
         cfg = self.cfg
-        _, bought, sold = s.levels[idx]
-        if not bought or sold:
+        if s.pending_sells.get(idx, 0) <= 0:
             return
-
-        # T+1: 只能卖出昨日持仓
-        available = s.position - s.today_bought
-        if available <= 0:
+        if s.position - s.today_bought <= 0:
             return
-
-        quantity = int(cfg.amount_per_grid / price)
-        if quantity <= 0:
+        qty = int(cfg.amount_per_grid / price)
+        if qty <= 0:
             return
-        quantity = min(quantity, available)
-
-        revenue = quantity * price
-        commission = max(revenue * cfg.commission, 0.1)
-        net_revenue = revenue - commission
-
-        s.cash += net_revenue
-        s.position -= quantity
-        s.levels[idx][2] = True  # marked sold
+        qty = min(qty, s.position - s.today_bought)
+        revenue = qty * price * (1 - cfg.commission) - 0.1
+        s.cash += revenue
+        s.position -= qty
+        s.pending_sells[idx] = s.pending_sells[idx] - 1
+        s.levels[idx - 1][2] += 1
         s.total_value = s.cash + s.position * price
         s.base_price = price
-        s.trades.append(Trade(dt, "sell", price, net_revenue, quantity, idx))
+        s.trades.append(Trade(dt, "sell", price, revenue, qty, idx - 1))
 
     def _process_bar(self, ohlc: pd.Series, dt: pd.Timestamp):
-        """处理一根 K 线：按 开→高→低→收 路径检测穿越
-
-        价格路径假设：
-          开盘 → 最高（先涨）→ 最低（后跌）→ 收盘
-        向上穿越网格线 → 卖出（卖高）
-        向下穿越网格线 → 买入（买低）
-        """
         s = self.state
         if s is None:
             return
-
         o, h, l = ohlc["open"], ohlc["high"], ohlc["low"]
-        prices = [l[0] for l in s.levels]
-
-        # 新的一天 → 重置 today_bought
-        if isinstance(dt, pd.Timestamp):
-            date_key = dt.date()
-            last_trade = s.trades[-1].datetime if s.trades else None
-            if last_trade is not None and last_trade.date() < date_key:
+        prices = [x[0] for x in s.levels]
+        if s.trades and isinstance(dt, pd.Timestamp):
+            last_dt = s.trades[-1].datetime
+            if isinstance(last_dt, pd.Timestamp) and last_dt.date() < dt.date():
                 s.today_bought = 0
-
-        # ── open → high：向上走 → 触发卖出 ──
-        for i in reversed(range(len(prices))):
-            p = prices[i]
-            if p > o and p <= h and s.levels[i][1] and not s.levels[i][2]:
-                self._try_sell(p, i, dt)
-
-        # ── high → low：向下走 → 触发买入 ──
+        # 开→高：向上穿线 → 卖出待卖
         for i in range(len(prices)):
-            p = prices[i]
-            if p < h and p >= l and not s.levels[i][1]:
-                self._try_buy(p, i, dt)
+            if o < prices[i] <= h and s.pending_sells.get(i, 0) > 0:
+                self._sell_at(i, prices[i], dt)
+        # 高→低：向下穿线 → 买入
+        for i in range(len(prices)):
+            if l <= prices[i] < h:
+                self._buy_at(i, prices[i], dt)
 
     def run(self, df: pd.DataFrame) -> list[Trade]:
-        """运行回测
-
-        Args:
-            df: DataFrame index=datetime, columns=['open','high','low','close','volume']
-
-        Returns:
-            trade 列表
-        """
         if len(df) == 0:
             return []
-
-        first_close = df["close"].iloc[0]
-        self._init_state(first_close, df)
-
+        self._init_state(float(df["close"].iloc[0]), df)
         for dt, row in df.iterrows():
             self._process_bar(row, dt)
-
         return self.state.trades
 
     def get_metrics(self, df: pd.DataFrame) -> dict:
-        """计算收益指标"""
         if self.state is None or len(self.state.trades) == 0:
-            return {"总收益": 0, "交易次数": 0}
-
+            return {"总收益": 0, "买入次数": 0, "卖出次数": 0}
         trades = self.state.trades
         n_lvls = self._compute_n_levels()
-        total_capital = self.cfg.initial_capital if self.cfg.initial_capital > 0 else (
+        cap = self.cfg.initial_capital if self.cfg.initial_capital > 0 else (
             self.cfg.amount_per_grid * min(self.cfg.max_positions, n_lvls))
-        final_value = self.state.cash + self.state.position * df["close"].iloc[-1]
-        total_return = final_value / total_capital - 1
-
-        # 按交易日计算净值
-        dates = sorted(set(t.datetime.date() for t in trades))
-        if len(df) > 0 and hasattr(df.index, 'date'):
-            all_dates = sorted(set(d.date() for d in df.index))
-        else:
-            all_dates = dates
-
-        # 胜率（按网格对计算）
-        buy_map = {}
-        win_count = 0
-        total_pairs = 0
+        fv = self.state.cash + self.state.position * df["close"].iloc[-1]
+        buys = {}
+        wins = pairs = 0
         for t in trades:
             if t.side == "buy":
-                buy_map[t.grid_idx] = t
-            elif t.side == "sell" and t.grid_idx in buy_map:
-                total_pairs += 1
-                buy_t = buy_map[t.grid_idx]
-                if t.price > buy_t.price:
-                    win_count += 1
-
-        win_rate = win_count / total_pairs if total_pairs > 0 else 0
-
-        # 最大回撤（按日）
-        day_values = {}
-        for t in trades:
-            d = t.datetime.date()
-            day_values[d] = None  # mark days with trades
-
-        if len(df) > 0:
-            nav = df["close"] * self.state.position + self.state.cash
-        else:
-            nav = pd.Series([final_value])
-
-        peak = nav.cummax()
-        dd = (nav / peak - 1).min() if len(nav) > 0 else 0
-
+                buys[t.grid_idx] = t
+            elif t.side == "sell" and t.grid_idx in buys:
+                pairs += 1
+                if t.price > buys[t.grid_idx].price:
+                    wins += 1
+        nav_s = df["close"] * self.state.position + self.state.cash
+        dd = (nav_s / nav_s.cummax() - 1).min() if len(nav_s) > 0 else 0
         return {
-            "总收益": total_return,
-            "买入次数": len([t for t in trades if t.side == "buy"]),
-            "卖出次数": len([t for t in trades if t.side == "sell"]),
-            "胜率": win_rate,
-            "最大回撤": dd,
-            "初始资金": total_capital,
-            "最终资产": final_value,
-            "持仓份额": self.state.position,
-            "剩余现金": self.state.cash,
+            "总收益": fv / cap - 1, "买入次数": sum(1 for t in trades if t.side == "buy"),
+            "卖出次数": sum(1 for t in trades if t.side == "sell"),
+            "胜率": wins / pairs if pairs > 0 else 0, "最大回撤": dd,
+            "初始资金": cap, "最终资产": fv,
+            "持仓份额": self.state.position, "剩余现金": self.state.cash,
         }
 
     def get_nav_series(self, df: pd.DataFrame) -> pd.Series:
-        """计算每日净值序列（正向构建，起点=1.0）"""
         if self.state is None:
             return pd.Series(dtype=float)
         cfg = self.cfg
         n_lvls = self._compute_n_levels()
-        total_capital = cfg.initial_capital if cfg.initial_capital > 0 else (
+        cap = cfg.initial_capital if cfg.initial_capital > 0 else (
             cfg.amount_per_grid * min(cfg.max_positions, n_lvls))
         dates = sorted(set(d.date() for d in df.index))
         if not dates:
             return pd.Series(dtype=float)
-        # 初始状态
-        first_close = float(df.iloc[0]["close"])
         pos = cfg.initial_shares
-        cash = total_capital - pos * first_close
-        # 按日期聚合交易（同一天可能有多次）
-        trade_map: dict = {}
+        cash = cap - pos * float(df.iloc[0]["close"])
+        tm = {}
         for t in self.state.trades:
             d = t.datetime.date()
-            if d not in trade_map:
-                trade_map[d] = [0, 0.0]  # [净持仓变化, 净现金变化]
+            if d not in tm:
+                tm[d] = [0, 0.0]
             if t.side == "buy":
-                trade_map[d][0] += t.quantity
-                trade_map[d][1] -= t.amount
+                tm[d][0] += t.quantity
+                tm[d][1] -= t.amount
             else:
-                trade_map[d][0] -= t.quantity
-                trade_map[d][1] += t.amount
-        # 逐日计算
-        nav_values = {}
+                tm[d][0] -= t.quantity
+                tm[d][1] += t.amount
+        nv = {}
         for d in dates:
-            if d in trade_map:
-                qty_chg, cash_chg = trade_map[d]
-                pos += qty_chg
-                cash += cash_chg
-            day_data = df[df.index.date == d]
-            close = float(day_data["close"].iloc[-1]) if len(day_data) > 0 else 0
-            nav_values[d] = (cash + pos * close) / total_capital
-        return pd.Series(nav_values, name="nav").sort_index()
+            if d in tm:
+                pos += tm[d][0]
+                cash += tm[d][1]
+            cd = df[df.index.date == d]
+            close = float(cd["close"].iloc[-1]) if len(cd) > 0 else 0
+            nv[d] = (cash + pos * close) / cap
+        return pd.Series(nv, name="nav").sort_index()
 
     def get_grid_df(self) -> pd.DataFrame:
-        """返回网格线列表用于可视化"""
         if self.state is None:
             return pd.DataFrame()
         rows = []
-        for i, (price, bought, sold) in enumerate(self.state.levels):
-            status = "已买" if bought else ("已卖" if sold else "待触")
-            rows.append({"网格线": f"L{i+1}", "价格": round(price, 4), "状态": status})
+        for i, (price, bc, sc) in enumerate(self.state.levels):
+            pending = self.state.pending_sells.get(i, 0)
+            parts = []
+            if bc > 0:
+                parts.append(f"买{bc}")
+            if pending > 0:
+                parts.append(f"待{pending}")
+            if sc > 0:
+                parts.append(f"卖{sc}")
+            rows.append({"线": f"L{i+1}", "价格": price,
+                         "状态": "/".join(parts) if parts else "—",
+                         "活跃": "✅" if (bc or sc or pending) else ""})
         return pd.DataFrame(rows)
 
 
-def run_grid_backtest(symbol: str, df: pd.DataFrame,
-                      grid_type: GridType = "arithmetic",
-                      n_levels: int = 10,
-                      step_value: float = 0.0,
-                      amount_per_grid: float = 10000.0,
-                      max_positions: int = 10,
-                      initial_capital: float = 0.0,
-                      initial_shares: int = 0,
-                      base_price: float = 0.0,
-                      commission: float = 0.0003,
-                      slippage: float = 0.001) -> tuple[list[Trade], dict, GridEngine]:
-    """快捷回测入口
-
-    Args:
-        symbol: 标的代码
-        df: OHLC DataFrame
-        grid_type: 网格类型
-        n_levels: 网格线数
-        amount_per_grid: 每格金额
-        max_positions: 最大持仓格数
-        commission: 佣金率
-        slippage: 滑点
-
-    Returns:
-        (trades, metrics, engine)
-    """
-    price_low = df["low"].min()
-    price_high = df["high"].max()
-
+def run_grid_backtest(symbol, df, grid_type="arithmetic",
+                      n_levels=10, step_value=0.0,
+                      amount_per_grid=10000.0, max_positions=10,
+                      initial_capital=0.0, initial_shares=0,
+                      base_price=0.0, commission=0.0003, slippage=0.001):
     config = GridConfig(
-        symbol=symbol,
-        grid_type=grid_type,
-        n_levels=n_levels,
-        price_low=price_low,
-        price_high=price_high,
-        amount_per_grid=amount_per_grid,
-        max_positions=max_positions,
-        initial_shares=initial_shares,
-        initial_capital=initial_capital,
-        step_value=step_value,
-        base_price=base_price,
-        commission=commission,
-        slippage=slippage,
+        symbol=symbol, grid_type=grid_type, n_levels=n_levels,
+        step_value=step_value, price_low=float(df["low"].min()),
+        price_high=float(df["high"].max()),
+        amount_per_grid=amount_per_grid, max_positions=max_positions,
+        initial_shares=initial_shares, initial_capital=initial_capital,
+        base_price=base_price, commission=commission, slippage=slippage,
     )
     engine = GridEngine(config)
     trades = engine.run(df)
