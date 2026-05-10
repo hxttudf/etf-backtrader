@@ -31,24 +31,37 @@ def _cache_path(symbol: str, period: str) -> Path:
     return CACHE_DIR / fname
 
 
-def _fetch_minute(symbol: str, period: str, start_date: str, end_date: str) -> pd.DataFrame:
+def _fetch_minute(symbol: str, period: str, start_date: str, end_date: str,
+                  source: str = "em") -> pd.DataFrame:
     """拉取分钟 K 线，返回 OHLC DataFrame"""
     typ = _detect_type(symbol)
-    try:
-        if typ == "etf":
-            df = ak.fund_etf_hist_min_em(
-                symbol=symbol, period=period,
-                start_date=start_date, end_date=end_date,
-                adjust="qfq",
-            )
+    last_err = None
+    for attempt in range(3):
+        try:
+            if source == "em":
+                if typ == "etf":
+                    df = ak.fund_etf_hist_min_em(
+                        symbol=symbol, period=period,
+                        start_date=start_date, end_date=end_date,
+                        adjust="qfq",
+                    )
+                else:
+                    df = ak.stock_zh_a_hist_min_em(
+                        symbol=symbol, period=period,
+                        start_date=start_date, end_date=end_date,
+                        adjust="qfq",
+                    )
+            else:
+                raise ValueError(f"不支持的数据源: {source}")
+        except Exception as e:
+            last_err = e
+            import time
+            time.sleep(2 * (attempt + 1))
+            continue
         else:
-            df = ak.stock_zh_a_hist_min_em(
-                symbol=symbol, period=period,
-                start_date=start_date, end_date=end_date,
-                adjust="qfq",
-            )
-    except Exception as e:
-        raise RuntimeError(f"拉取 {symbol} ({period}min) 失败: {e}")
+            break
+    else:
+        raise RuntimeError(f"拉取 {symbol} ({period}min) [{source}] 失败 (重试{attempt+1}次): {last_err}")
 
     if df is None or len(df) == 0:
         return pd.DataFrame()
@@ -67,7 +80,8 @@ def _fetch_minute(symbol: str, period: str, start_date: str, end_date: str) -> p
 def load_grid_data(symbol: str, period: str = "5",
                    start_date: str | None = None,
                    end_date: str | None = None,
-                   force_refresh: bool = False) -> pd.DataFrame:
+                   force_refresh: bool = False,
+                   source: str = "em") -> pd.DataFrame:
     """加载分钟 K 线数据（缓存优先）
 
     Args:
@@ -104,7 +118,7 @@ def load_grid_data(symbol: str, period: str = "5",
     fetch_start = (pd.Timestamp(start_date) - pd.Timedelta(days=30)).strftime("%Y-%m-%d")
     fetch_end = (pd.Timestamp(end_date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
 
-    df = _fetch_minute(symbol, period, fetch_start, fetch_end)
+    df = _fetch_minute(symbol, period, fetch_start, fetch_end, source=source)
     if len(df) == 0:
         # 拉取失败，尝试用缓存兜底
         if cache_file.exists():

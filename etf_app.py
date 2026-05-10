@@ -692,17 +692,24 @@ if _mode == "网格交易":
     st.sidebar.header("📊 网格参数")
 
     grid_symbol = st.sidebar.text_input("标的代码", value="510050",
-                                        help="ETF 或个股代码")
+                                        help="ETF 或个股代码，如 510050(上证50)、159740(纳指ETF)")
     grid_period = st.sidebar.selectbox("K线粒度", ["1", "5", "15", "30", "60"],
                                        index=1, format_func=lambda x: f"{x} 分钟")
+    grid_source = st.sidebar.selectbox("数据源", ["em"],
+                                       index=0,
+                                       format_func=lambda x: {"em": "东方财富 (EM)"}[x],
+                                       help="东方财富提供分钟级 K 线，akshare 目前暂无 Sina 分钟数据")
     grid_type = st.sidebar.selectbox("网格类型", ["arithmetic", "geometric", "volatility"],
                                      index=0,
                                      format_func=lambda x: {"arithmetic": "等差网格",
                                                             "geometric": "等比网格",
                                                             "volatility": "ATR 动态网格"}[x])
-    grid_n = st.sidebar.slider("网格线数", 4, 50, 10)
-    grid_amount = st.sidebar.number_input("每格金额", 1000, 100000, 10000, step=1000)
-    grid_max_pos = st.sidebar.slider("最大持仓格数", 1, 30, 10)
+    grid_n = st.sidebar.slider("网格线数", 4, 50, 10,
+                               help="价格区间内划分的网格数量，越多交易越密集")
+    grid_amount = st.sidebar.number_input("每格金额", 1000, 100000, 10000, step=1000,
+                                          help="每条网格线触发时买入/卖出的金额。如每格1万元、10格，总资金约需10万元")
+    grid_max_pos = st.sidebar.slider("最大持仓格数", 1, 30, 10,
+                                     help="最多同时持有几个网格的仓位。例：20格设5，则最多同时持有5格，控制总风险敞口")
 
     sb_date_col1_g, sb_date_col2_g = st.sidebar.columns(2)
     with sb_date_col1_g:
@@ -714,8 +721,10 @@ if _mode == "网格交易":
                                   key="gs_end", format="YYYY-MM-DD",
                                   max_value=pd.Timestamp.today())
 
-    comm = st.sidebar.number_input("佣金率", 0.0, 0.01, 0.0003, step=0.0001, format="%.4f")
-    slip = st.sidebar.number_input("滑点", 0.0, 0.01, 0.001, step=0.0005, format="%.4f")
+    comm = st.sidebar.number_input("佣金率", 0.0, 0.01, 0.0003, step=0.0001, format="%.4f",
+                                   help="ETF 万1~万3（0.0001~0.0003），A股印花税万5只收卖出")
+    slip = st.sidebar.number_input("滑点", 0.0, 0.01, 0.001, step=0.0005, format="%.4f",
+                                   help="成交价与网格线之间的偏差。流动性好的ETF设0.001（0.1%），差的设0.002~0.003")
 
     run_grid_btn = st.sidebar.button("🚀 运行网格回测", type="primary", width='stretch')
 
@@ -725,7 +734,8 @@ if _mode == "网格交易":
     if run_grid_btn:
         with st.spinner(f"加载 {grid_symbol} 分钟数据..."):
             df = load_grid_data(grid_symbol, period=grid_period,
-                                start_date=str(grid_start), end_date=str(grid_end))
+                                start_date=str(grid_start), end_date=str(grid_end),
+                                source=grid_source)
 
         if len(df) == 0:
             st.error("❌ 未获取到数据，请检查标的代码或网络")
