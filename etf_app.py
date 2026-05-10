@@ -734,35 +734,39 @@ if _mode == "网格交易":
                                         help="输入文字搜索，支持键盘上下选择")
     grid_symbol = grid_sym_sel.split("(")[0].strip()
 
-    with st.sidebar.expander("📝 管理标的"):
-        new_code = st.text_input("代码", "", key="g_new_code", max_chars=10)
-        new_name = st.text_input("名称", "", key="g_new_name", max_chars=20)
-        c_add, c_del = st.columns(2)
-        with c_add:
-            if st.button("添加", key="g_add_btn", use_container_width=True):
-                code_s = new_code.strip()
-                name_s = new_name.strip()
-                if code_s and name_s:
-                    exists = any(s == code_s for s, _ in st.session_state.grid_symbols)
-                    if not exists:
-                        st.session_state.grid_symbols.append((code_s, name_s))
-                        st.rerun()
-        with c_del:
-            sel_idx = grid_sym_list.index(grid_sym_sel) if grid_sym_sel in grid_sym_list else -1
-            if st.button("删除当前", key="g_del_btn", use_container_width=True):
-                if sel_idx >= 0 and sel_idx < len(st.session_state.grid_symbols):
-                    st.session_state.grid_symbols.pop(sel_idx)
+    with st.sidebar.expander("📝 管理标的", expanded=True):
+        # 添加
+        st.markdown("**添加**")
+        ac1, ac2 = st.columns(2)
+        new_code = ac1.text_input("代码", "", key="g_new_code", max_chars=10, label_visibility="collapsed")
+        new_name = ac2.text_input("名称", "", key="g_new_name", max_chars=20, label_visibility="collapsed")
+        if st.button("➕ 添加", key="g_add_btn", use_container_width=True):
+            cs, ns = new_code.strip(), new_name.strip()
+            if cs and ns:
+                if any(s == cs for s, _ in st.session_state.grid_symbols):
+                    st.warning("该代码已存在")
+                else:
+                    st.session_state.grid_symbols.append((cs, ns))
                     st.rerun()
-        # 编辑名称：双击当前标的的名称
-        if grid_sym_list:
-            cur_code = grid_symbol
-            edit_name = st.text_input("修改名称", value=dict(st.session_state.grid_symbols).get(cur_code, ""),
-                                      key="g_edit_name", max_chars=20)
-            if st.button("保存名称", key="g_rename_btn", use_container_width=True):
-                for i, (code, _) in enumerate(st.session_state.grid_symbols):
-                    if code == cur_code:
-                        st.session_state.grid_symbols[i] = (code, edit_name.strip())
-                        st.rerun()
+        # 编辑/删除：下拉选择要操作的标的
+        st.markdown("**编辑/删除**")
+        edit_sel = st.selectbox("选择标的", grid_sym_list, key="g_edit_sel",
+                                label_visibility="collapsed")
+        ec1, ec2, ec3 = st.columns([2, 1, 1])
+        edit_new_name = ec1.text_input("新名称", value=edit_sel.split("(")[1].rstrip(")") if "(" in edit_sel else "",
+                                       key="g_edit_name", label_visibility="collapsed")
+        if ec2.button("✏️ 改名", key="g_rename_btn", use_container_width=True):
+            ec = edit_sel.split("(")[0].strip()
+            for i, (code, _) in enumerate(st.session_state.grid_symbols):
+                if code == ec:
+                    st.session_state.grid_symbols[i] = (code, edit_new_name.strip())
+                    st.rerun()
+        if ec3.button("🗑️ 删除", key="g_del_btn", use_container_width=True):
+            ec = edit_sel.split("(")[0].strip()
+            for i, (code, _) in enumerate(st.session_state.grid_symbols):
+                if code == ec:
+                    st.session_state.grid_symbols.pop(i)
+                    st.rerun()
 
     grid_period = st.sidebar.selectbox("K线粒度", ["daily", "1", "5", "15", "30", "60"],
                                        index=["daily","1","5","15","30","60"].index(_grid_def("g_period", "daily")),
@@ -785,8 +789,20 @@ if _mode == "网格交易":
                                                             "geometric": "等比网格",
                                                             "volatility": "ATR 动态网格"}[x],
                                      key="g_type_sel")
-    grid_n = st.sidebar.slider("网格线数", 4, 50, int(_grid_def("g_n", "10")),
-                               help="价格区间内划分网格数量", key="g_n_slider")
+    grid_use_step = st.sidebar.checkbox("按步长设置", value=_grid_def("g_step", "0") != "0",
+                                         help="勾选后按价差/百分比自动计算网格线数，更灵活")
+    if grid_use_step:
+        step_label = "每格价差" if grid_type == "arithmetic" else "每格百分比(%)"
+        step_fmt = "%.4f" if grid_type == "arithmetic" else "%.2f"
+        step_default = 0.05 if grid_type == "arithmetic" else 1.0
+        grid_step = st.sidebar.number_input(step_label, 0.001, 100.0,
+                                             float(_grid_def("g_step", str(step_default))),
+                                             step=0.01, format=step_fmt, key="g_step_inp")
+        grid_n = 0
+    else:
+        grid_step = 0.0
+        grid_n = st.sidebar.slider("网格线数", 4, 50, int(_grid_def("g_n", "10")),
+                                   help="价格区间内划分网格数量", key="g_n_slider")
     grid_amount = st.sidebar.number_input("每格金额", 1000, 100000,
                                           int(_grid_def("g_amt", "10000")), step=1000,
                                           help="每条网格线触发时买入/卖出的金额",
@@ -839,7 +855,7 @@ if _mode == "网格交易":
     # 持久化到 URL query params
     st.query_params.update({
         "g_sym": grid_sym_sel, "g_period": grid_period, "g_src": grid_source,
-        "g_type": grid_type, "g_n": str(grid_n),
+        "g_type": grid_type, "g_step": str(grid_step), "g_n": str(grid_n),
         "g_amt": str(grid_amount), "g_maxp": str(grid_max_pos),
         "g_init": str(grid_init_shares), "g_cap": str(grid_capital),
         "g_pauto": "1" if grid_price_auto else "0",
@@ -853,7 +869,7 @@ if _mode == "网格交易":
                          help="保存当前参数到 etf_grid_config.json，远程部署时也适用"):
         config_data = {
             "g_sym": grid_sym_sel, "g_period": grid_period, "g_src": grid_source,
-            "g_type": grid_type, "g_n": str(grid_n),
+            "g_type": grid_type, "g_step": str(grid_step), "g_n": str(grid_n),
             "g_amt": str(grid_amount), "g_maxp": str(grid_max_pos),
             "g_init": str(grid_init_shares), "g_cap": str(grid_capital),
             "g_pauto": "1" if grid_price_auto else "0",
@@ -884,7 +900,7 @@ if _mode == "网格交易":
                     pl, ph = grid_pl, grid_ph
                 trades, metrics, engine = run_grid_backtest(
                     grid_symbol, df, grid_type=grid_type,
-                    n_levels=grid_n, amount_per_grid=grid_amount,
+                    n_levels=grid_n, step_value=grid_step, amount_per_grid=grid_amount,
                     max_positions=grid_max_pos,
                     initial_capital=grid_capital,
                     initial_shares=grid_init_shares,
@@ -920,22 +936,26 @@ if _mode == "网格交易":
 
             # 网格线
             st.divider()
-            st.markdown("### 🎯 网格线")
+            st.markdown("### 🎯 网格线状态")
+            st.caption("每条网格线在回测期间的触达状态：已买=价格跌到此线时买入，已卖=价格涨到此线时卖出，待触=从未到达")
             grid_df = engine.get_grid_df()
             st.dataframe(grid_df, hide_index=True, width='content')
 
             # 净值图
             st.divider()
             st.markdown("### 📈 净值曲线")
-            if len(trades) > 0:
+            nav_series = engine.get_nav_series(df)
+            if len(nav_series) > 1:
                 import plotly.graph_objects as go
-                nav_series = pd.Series(metrics['最终资产'], index=[pd.Timestamp(grid_end)])
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(
                     x=nav_series.index, y=nav_series.values,
-                    mode='lines+markers', name='网格策略'
+                    mode='lines', name='网格策略',
+                    line=dict(color='#2196F3', width=2)
                 ))
+                fig.add_hline(y=1.0, line_color='gray', line_dash='dot', opacity=0.5)
                 fig.update_layout(height=400, template='plotly_white',
+                                  yaxis_tickformat='.2%',
                                   title=f'{grid_symbol} 网格策略净值')
                 st.plotly_chart(fig, width='stretch')
 
@@ -971,13 +991,15 @@ if _mode == "网格交易":
                             sell_dates.append(d)
                             sell_prices.append(t.price)
                     fig2.add_trace(go.Scatter(
-                        x=buy_dates, y=buy_prices, mode='markers',
-                        marker=dict(symbol='triangle-up', size=12, color='#00cc66'),
+                        x=buy_dates, y=buy_prices, mode='text',
+                        text=['B']*len(buy_dates),
+                        textfont=dict(color='#1976D2', size=14, family='Arial Black'),
                         name='买入', hovertemplate='买入 %{y:.3f}<extra></extra>'
                     ))
                     fig2.add_trace(go.Scatter(
-                        x=sell_dates, y=sell_prices, mode='markers',
-                        marker=dict(symbol='triangle-down', size=12, color='#ff4444'),
+                        x=sell_dates, y=sell_prices, mode='text',
+                        text=['S']*len(sell_dates),
+                        textfont=dict(color='#D32F2F', size=14, family='Arial Black'),
                         name='卖出', hovertemplate='卖出 %{y:.3f}<extra></extra>'
                     ))
                 fig2.update_layout(height=450, template='plotly_white',

@@ -49,7 +49,8 @@ class GridConfig:
     """网格配置"""
     symbol: str
     grid_type: GridType = "arithmetic"
-    n_levels: int = 10
+    n_levels: int = 10        # 网格线数（step_value=0 时使用）
+    step_value: float = 0.0   # 每格步长：价差(arithmetic)或百分比(geometric)。设>0时覆盖n_levels
     price_low: float = 0.0
     price_high: float = 0.0
     amount_per_grid: float = 10000.0
@@ -130,16 +131,29 @@ class GridEngine:
         self.cfg = config
         self.state: GridState | None = None
 
+    def _compute_n_levels(self) -> int:
+        """根据 step_value 或 n_levels 计算网格线数"""
+        cfg = self.cfg
+        if cfg.step_value > 0 and cfg.price_high > cfg.price_low:
+            if cfg.grid_type == "geometric":
+                ratio = 1 + cfg.step_value / 100
+                n = int(math.log(cfg.price_high / cfg.price_low) / math.log(ratio)) + 1
+            else:
+                n = int((cfg.price_high - cfg.price_low) / cfg.step_value) + 1
+            return max(n, 2)
+        return cfg.n_levels
+
     def _init_state(self, first_price: float, df: pd.DataFrame | None = None):
         """初始化网格和状态"""
         cfg = self.cfg
+        n_levels = self._compute_n_levels()
         calc = GRID_CALCULATORS[cfg.grid_type]
 
         if cfg.grid_type == "volatility":
-            prices = calc(cfg.price_low, cfg.price_high, cfg.n_levels, first_price,
+            prices = calc(cfg.price_low, cfg.price_high, n_levels, first_price,
                           df=df, atr_period=cfg.atr_period, atr_multiplier=cfg.atr_multiplier)
         else:
-            prices = calc(cfg.price_low, cfg.price_high, cfg.n_levels, first_price)
+            prices = calc(cfg.price_low, cfg.price_high, n_levels, first_price)
 
         levels = [(round(p, 4), False, False) for p in sorted(prices)]
         # 本金：设了 initial_capital 就用它，否则按 amount_per_grid * max_positions
@@ -284,8 +298,9 @@ class GridEngine:
             return {"总收益": 0, "交易次数": 0}
 
         trades = self.state.trades
+        n_lvls = self._compute_n_levels()
         total_capital = self.cfg.initial_capital if self.cfg.initial_capital > 0 else (
-            self.cfg.amount_per_grid * min(self.cfg.max_positions, self.cfg.n_levels))
+            self.cfg.amount_per_grid * min(self.cfg.max_positions, n_lvls))
         final_value = self.state.cash + self.state.position * df["close"].iloc[-1]
         total_return = final_value / total_capital - 1
 
@@ -335,6 +350,39 @@ class GridEngine:
             "剩余现金": self.state.cash,
         }
 
+    def get_nav_series(self, df: pd.DataFrame) -> pd.Series:
+        """计算每日净值序列"""
+        if self.state is None:
+            return pd.Series(dtype=float)
+        total_capital = self.cfg.initial_capital if self.cfg.initial_capital > 0 else (
+            self.cfg.amount_per_grid * min(self.cfg.max_positions, self._compute_n_levels()))
+        # 建一个日期→持仓映射
+        daily_pos = {}
+        daily_cash = {}
+        pos, cash = self.state.position, self.state.cash
+        # 从 trade 记录回溯
+        trade_map = {}  # date -> (new_pos, new_cash)
+        for t in reversed(self.state.trades):
+            trade_map[t.datetime.date()] = (t.quantity, t.amount, t.side)
+        # 从末尾往前遍历
+        dates = sorted(set(d.date() for d in df.index))
+        for d in reversed(dates):
+            daily_pos[d] = pos
+            daily_cash[d] = cash
+            if d in trade_map:
+                qty, amt, side = trade_map[d]
+                if side == "buy":
+                    pos -= qty
+                    cash += amt
+                else:
+                    pos += qty
+                    cash -= amt
+        nav = pd.Series({d: daily_cash[d] + daily_pos[d] * float(
+            df[df.index.date == d]["close"].iloc[-1]) if len(df[df.index.date == d]) > 0 else daily_cash[d]
+                         for d in dates}, name="nav")
+        nav = nav.sort_index() / total_capital
+        return nav
+
     def get_grid_df(self) -> pd.DataFrame:
         """返回网格线列表用于可视化"""
         if self.state is None:
@@ -349,6 +397,7 @@ class GridEngine:
 def run_grid_backtest(symbol: str, df: pd.DataFrame,
                       grid_type: GridType = "arithmetic",
                       n_levels: int = 10,
+                      step_value: float = 0.0,
                       amount_per_grid: float = 10000.0,
                       max_positions: int = 10,
                       initial_capital: float = 0.0,
@@ -383,6 +432,7 @@ def run_grid_backtest(symbol: str, df: pd.DataFrame,
         max_positions=max_positions,
         initial_shares=initial_shares,
         initial_capital=initial_capital,
+        step_value=step_value,
         commission=commission,
         slippage=slippage,
     )
