@@ -971,50 +971,7 @@ if _mode == "网格交易":
                     increasing_line_color='#E53935', decreasing_line_color='#43A047',
                 ))
                 # 网格线（灰度 >0=显示，0=隐藏，方便排查其他横线干扰）
-                # 买卖触发线：按每笔交易分段绘制
-                def _step_at(price, cfg_grid_type, cfg_step):
-                    if cfg_grid_type == "geometric" and cfg_step > 0:
-                        return price * cfg_step / 100
-                    return cfg_step if cfg_step > 0 else price * 0.01
-
-                trade_dates = [t.datetime for t in trades]
-                all_dates = daily.index.tolist()
-                # 在每个交易区间画触发线
-                prev_base = float(df["close"].iloc[0]) if not trades else trades[0].price
-                prev_date = all_dates[0]
-                had_sell = False
-                for i, t in enumerate(trades):
-                    d = t.datetime
-                    end_date = (trades[i+1].datetime if i+1 < len(trades) else all_dates[-1])
-                    # 前一段的触发线（基准价 = prev_base 时）
-                    bp = round(prev_base - _step_at(prev_base, grid_type, grid_step), 4)
-                    sp = round(prev_base + _step_at(prev_base, grid_type, grid_step), 4)
-                    fig2.add_trace(go.Scatter(
-                        x=[prev_date, end_date], y=[bp, bp],
-                        mode='lines', line=dict(color='#D32F2F', width=1, dash='dash'),
-                        name='买入触发' if i == 0 else '', showlegend=(i == 0),
-                        hovertemplate='买入 %{y:.3f}<extra></extra>'))
-                    if had_sell:
-                        fig2.add_trace(go.Scatter(
-                            x=[prev_date, end_date], y=[sp, sp],
-                            mode='lines', line=dict(color='#1976D2', width=1, dash='dash'),
-                            name='卖出触发' if i == 0 else '', showlegend=(i == 0),
-                            hovertemplate='卖出 %{y:.3f}<extra></extra>'))
-                    prev_base = t.price
-                    prev_date = end_date
-                    had_sell = (t.side == "buy")  # 买入后有待卖
-                # 最后一段
-                bp = round(prev_base - _step_at(prev_base, grid_type, grid_step), 4)
-                sp = round(prev_base + _step_at(prev_base, grid_type, grid_step), 4)
-                fig2.add_trace(go.Scatter(
-                    x=[prev_date, all_dates[-1]], y=[bp, bp],
-                    mode='lines', line=dict(color='#D32F2F', width=1, dash='dash'),
-                    name='买入触发', showlegend=False, hovertemplate='买入 %{y:.3f}<extra></extra>'))
-                if had_sell:
-                    fig2.add_trace(go.Scatter(
-                        x=[prev_date, all_dates[-1]], y=[sp, sp],
-                        mode='lines', line=dict(color='#1976D2', width=1, dash='dash'),
-                        name='卖出触发', showlegend=False, hovertemplate='卖出 %{y:.3f}<extra></extra>'))
+                # 网格线已移除，保留 K 线 + B/S 标记
                 # 买卖标记：圆点在实际成交价（对齐网格线），B/S 在当天极值外侧
                 if trades:
                     buy_dates, buy_ps, sell_dates, sell_ps = [], [], [], []
