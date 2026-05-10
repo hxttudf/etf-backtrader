@@ -29,6 +29,7 @@ class GridConfig:
     amount_per_grid: float = 10000.0
     max_positions: int = 10
     initial_capital: float = 0.0
+    initial_shares: int = 0   # 底仓（T+1 时首日可卖）
     commission: float = 0.0003
     slippage: float = 0.001
 
@@ -102,7 +103,13 @@ class GridEngine:
             return []
         self.base_price = self.cfg.base_price if self.cfg.base_price > 0 else float(df["close"].iloc[0])
         cap = self.cfg.initial_capital if self.cfg.initial_capital > 0 else self.cfg.amount_per_grid * self.cfg.max_positions
-        self.cash, self.position, self.today_bought, self.trades, self._pending_sell = cap, 0, 0, [], None
+        init_pos = self.cfg.initial_shares
+        init_cost = init_pos * self.base_price
+        self.cash = cap - init_cost
+        self.position = init_pos
+        self.today_bought = 0
+        self.trades = []
+        self._pending_sell = None
         for dt, row in df.iterrows():
             self._process_bar(row, dt)
         return self.trades
@@ -149,11 +156,13 @@ class GridEngine:
 def run_grid_backtest(symbol, df, grid_type="arithmetic",
                       step_value=0.0, amount_per_grid=10000.0,
                       max_positions=10, initial_capital=0.0,
-                      base_price=0.0, commission=0.0003, slippage=0.001):
+                      initial_shares=0, base_price=0.0,
+                      commission=0.0003, slippage=0.001):
     config = GridConfig(symbol=symbol, grid_type=grid_type, step_value=step_value,
                         base_price=base_price, amount_per_grid=amount_per_grid,
                         max_positions=max_positions, initial_capital=initial_capital,
-                        commission=commission, slippage=slippage)
+                        initial_shares=initial_shares, commission=commission,
+                        slippage=slippage)
     engine = GridEngine(config)
     trades = engine.run(df)
     return trades, engine.get_metrics(df), engine
