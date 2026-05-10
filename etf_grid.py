@@ -51,8 +51,9 @@ class GridConfig:
     grid_type: GridType = "arithmetic"
     n_levels: int = 10        # 网格线数（step_value=0 时使用）
     step_value: float = 0.0   # 每格步长：价差(arithmetic)或百分比(geometric)。设>0时覆盖n_levels
-    price_low: float = 0.0
-    price_high: float = 0.0
+    price_low: float = 0.0    # 0 = 自动从数据计算
+    price_high: float = 0.0   # 0 = 自动从数据计算
+    base_price: float = 0.0   # 基准价（0=使用首日收盘）。设>0时 grid 以此为中心展开
     amount_per_grid: float = 10000.0
     max_positions: int = 10
     initial_capital: float = 0.0  # 总本金（0=自动按 amount_per_grid*max_positions）
@@ -147,13 +148,32 @@ class GridEngine:
         """初始化网格和状态"""
         cfg = self.cfg
         n_levels = self._compute_n_levels()
-        calc = GRID_CALCULATORS[cfg.grid_type]
 
+        # 价格区间：base_price > 0 时以此为中心展开，否则用数据 min/max
+        if cfg.base_price > 0:
+            bp = cfg.base_price
+            if cfg.grid_type == "geometric" and cfg.step_value > 0:
+                ratio = 1 + cfg.step_value / 100
+                half_n = n_levels // 2
+                pl = bp * (ratio ** -half_n)
+                ph = bp * (ratio ** half_n)
+            elif cfg.step_value > 0:
+                half_n = n_levels // 2
+                pl = bp - half_n * cfg.step_value
+                ph = bp + half_n * cfg.step_value
+            else:
+                pl = cfg.price_low if cfg.price_low > 0 else bp * 0.9
+                ph = cfg.price_high if cfg.price_high > 0 else bp * 1.1
+        else:
+            pl = cfg.price_low if cfg.price_low > 0 else (float(df["low"].min()) if df is not None else first_price * 0.9)
+            ph = cfg.price_high if cfg.price_high > 0 else (float(df["high"].max()) if df is not None else first_price * 1.1)
+
+        calc = GRID_CALCULATORS[cfg.grid_type]
         if cfg.grid_type == "volatility":
-            prices = calc(cfg.price_low, cfg.price_high, n_levels, first_price,
+            prices = calc(pl, ph, n_levels, first_price,
                           df=df, atr_period=cfg.atr_period, atr_multiplier=cfg.atr_multiplier)
         else:
-            prices = calc(cfg.price_low, cfg.price_high, n_levels, first_price)
+            prices = calc(pl, ph, n_levels, first_price)
 
         levels = [(round(p, 4), False, False) for p in sorted(prices)]
         # 本金：设了 initial_capital 就用它，否则按 amount_per_grid * max_positions
@@ -345,6 +365,7 @@ class GridEngine:
             "交易次数": len([t for t in trades if t.side == "buy"]),
             "胜率": win_rate,
             "最大回撤": dd,
+            "初始资金": total_capital,
             "最终资产": final_value,
             "持仓份额": self.state.position,
             "剩余现金": self.state.cash,
@@ -408,6 +429,7 @@ def run_grid_backtest(symbol: str, df: pd.DataFrame,
                       max_positions: int = 10,
                       initial_capital: float = 0.0,
                       initial_shares: int = 0,
+                      base_price: float = 0.0,
                       commission: float = 0.0003,
                       slippage: float = 0.001) -> tuple[list[Trade], dict, GridEngine]:
     """快捷回测入口
@@ -439,6 +461,7 @@ def run_grid_backtest(symbol: str, df: pd.DataFrame,
         initial_shares=initial_shares,
         initial_capital=initial_capital,
         step_value=step_value,
+        base_price=base_price,
         commission=commission,
         slippage=slippage,
     )

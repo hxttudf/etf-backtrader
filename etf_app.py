@@ -822,19 +822,11 @@ if _mode == "网格交易":
                                             int(_grid_def("g_cap", "0")), step=10000,
                                             help="总资金。0=自动按每格金额×最大持仓格数计算",
                                             key="g_cap_inp")
-    # 价格区间（默认自动）
-    grid_price_auto = st.sidebar.checkbox("价格区间自动", value=_grid_def("g_pauto", "1") == "1",
-                                          help="取消勾选可手动设置上下界")
-    if not grid_price_auto:
-        gc_low, gc_high = st.sidebar.columns(2)
-        with gc_low:
-            grid_pl = st.number_input("下界", 0.0, 1000.0, float(_grid_def("g_pl", "0")),
-                                      step=0.1, format="%.2f", key="g_pl_inp")
-        with gc_high:
-            grid_ph = st.number_input("上界", 0.0, 10000.0, float(_grid_def("g_ph", "0")),
-                                      step=0.1, format="%.2f", key="g_ph_inp")
-    else:
-        grid_pl = grid_ph = 0.0
+    grid_base_price = st.sidebar.number_input("基准价", 0.0, 10000.0,
+                                               float(_grid_def("g_bp", "0")), step=0.01,
+                                               format="%.2f",
+                                               help="网格中心价格。设为0则用回测首日收盘价，也可手动指定",
+                                               key="g_bp_inp")
 
     sb_date_col1_g, sb_date_col2_g = st.sidebar.columns(2)
     with sb_date_col1_g:
@@ -861,8 +853,7 @@ if _mode == "网格交易":
         "g_type": grid_type, "g_step": str(grid_step), "g_n": str(grid_n),
         "g_amt": str(grid_amount), "g_maxp": str(grid_max_pos),
         "g_init": str(grid_init_shares), "g_cap": str(grid_capital),
-        "g_pauto": "1" if grid_price_auto else "0",
-        "g_pl": str(grid_pl), "g_ph": str(grid_ph),
+        "g_bp": str(grid_base_price),
         "g_sd": str(grid_start), "g_ed": str(grid_end),
         "g_comm": str(comm), "g_slip": str(slip),
     })
@@ -896,29 +887,27 @@ if _mode == "网格交易":
             st.error("❌ 未获取到数据，请检查标的代码或网络")
         else:
             with st.spinner("运行网格回测..."):
-                # 价格区间：手动或自动
-                if grid_price_auto:
-                    pl, ph = float(df["low"].min()), float(df["high"].max())
-                else:
-                    pl, ph = grid_pl, grid_ph
                 trades, metrics, engine = run_grid_backtest(
                     grid_symbol, df, grid_type=grid_type,
                     n_levels=grid_n, step_value=grid_step, amount_per_grid=grid_amount,
                     max_positions=grid_max_pos,
                     initial_capital=grid_capital,
                     initial_shares=grid_init_shares,
+                    base_price=grid_base_price,
                     commission=comm, slippage=slip,
                 )
 
             st.subheader(f"网格回测: {grid_symbol}  |  {grid_start} ~ {grid_end}")
 
             # 指标卡片
-            mcols = st.columns(5)
+            total_cap = grid_capital if grid_capital > 0 else grid_n * grid_amount if grid_n > 0 else grid_amount * grid_max_pos
+            mcols = st.columns(6)
             mcols[0].metric("总收益", f"{metrics['总收益']:.3%}")
-            mcols[1].metric("交易次数", metrics["交易次数"])
-            mcols[2].metric("胜率", f"{metrics['胜率']:.1%}")
-            mcols[3].metric("最大回撤", f"{metrics['最大回撤']:.3%}")
-            mcols[4].metric("剩余现金", f"{metrics['剩余现金']:.0f}")
+            mcols[1].metric("初始现金", f"{total_cap:,.0f}")
+            mcols[2].metric("剩余现金", f"{metrics['剩余现金']:,.0f}")
+            mcols[3].metric("交易次数", metrics["交易次数"])
+            mcols[4].metric("胜率", f"{metrics['胜率']:.1%}")
+            mcols[5].metric("最大回撤", f"{metrics['最大回撤']:.3%}")
 
             # 交易明细
             st.divider()
@@ -977,13 +966,12 @@ if _mode == "网格交易":
                     low=daily['low'], close=daily['close'],
                     name=grid_symbol
                 ))
-                # 网格线：只显示已触发的（已买/已卖），减少密集度
+                # 网格线：灰色细实线（已触发=实心，未触发=虚线，稍有区分）
                 for i, (price, bought, sold) in enumerate(engine.state.levels):
                     if not bought and not sold:
                         continue
-                    color = '#4CAF50' if bought else '#FF9800'
-                    fig2.add_hline(y=price, line_color=color,
-                                   line_dash='dash', opacity=0.4,
+                    fig2.add_hline(y=price, line_color='#888888',
+                                   line_width=0.8, opacity=0.35,
                                    annotation_text=f"L{i+1} {price:.3f}")
                 # 买卖标记（B/S 放在 K 线上下两侧）
                 if trades:
@@ -1014,7 +1002,7 @@ if _mode == "网格交易":
                         textfont=dict(color='#D32F2F', size=14, family='Arial Black'),
                         name='卖出', hovertemplate='S %{y:.3f}<extra></extra>'
                     ))
-                fig2.update_layout(height=450, template='plotly_white',
+                fig2.update_layout(height=600, template='plotly_white',
                                    title=f'{grid_symbol} K 线 + 网格线')
                 st.plotly_chart(fig2, width='stretch')
 
