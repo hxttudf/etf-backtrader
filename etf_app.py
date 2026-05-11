@@ -32,6 +32,7 @@ st.set_page_config(page_title="ETF双动量轮动", layout="wide")
 
 # 网格参数持久化（本地 JSON + URL）
 GRID_CONFIG_PATH = Path(__file__).parent / "etf_grid_config.json"
+MOMENTUM_CONFIG_PATH = Path(__file__).parent / "etf_momentum_config.json"
 
 st.markdown("""
 <style>
@@ -1046,7 +1047,12 @@ st.sidebar.header("📊 回测参数")
 
 # ── Restore from URL query params (survives browser refresh) ──
 qp = st.query_params
-_qp = lambda k, d: qp[k] if k in qp and qp[k] not in ("NaT", "") else d
+# 从 JSON 配置文件加载默认值（URL params 优先级更高）
+_momentum_file_cfg = {}
+if MOMENTUM_CONFIG_PATH.exists():
+    try: _momentum_file_cfg = json.loads(MOMENTUM_CONFIG_PATH.read_text())
+    except Exception: pass
+_qp = lambda k, d: qp[k] if k in qp and qp[k] not in ("NaT", "") else (_momentum_file_cfg.get(k, d) if k in _momentum_file_cfg else d)
 
 
 # Group selector + config button
@@ -1148,6 +1154,16 @@ st.query_params.update({
     "stg": strategy,
     "delay": str(delay),
 })
+
+if st.sidebar.button("💾 保存动量配置", width='stretch',
+                     help="保存当前参数到 etf_momentum_config.json，远程部署适用"):
+    config_data = {
+        "g": sel_group, "start": str(start_date), "end": str(end_date),
+        "mode": mode, "src": source, "ma": str(ma_days), "roc": str(roc_days),
+        "stg": strategy, "delay": str(delay),
+    }
+    MOMENTUM_CONFIG_PATH.write_text(json.dumps(config_data, ensure_ascii=False, indent=2))
+    st.sidebar.success("✅ 动量配置已保存")
 
 st.sidebar.divider()
 st.sidebar.header("🔍 参数遍历")
