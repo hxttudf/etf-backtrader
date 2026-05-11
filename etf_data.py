@@ -109,6 +109,21 @@ def fetch_one_akshare(code: str, days: int = 0) -> pd.Series:
     return result_close
 
 
+def fetch_tencent_qt(code: str) -> dict | None:
+    """腾讯实时行情 — 3位小数精度，用于信号查询"""
+    m = _market(code)
+    url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={m}{code},day,,,1,qfq"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        qt = data.get("data", {}).get(f"{m}{code}", {}).get("qt", {}).get(f"{m}{code}")
+        if qt and len(qt) > 5:
+            return {"open": float(qt[5]), "price": float(qt[3]), "prev_close": float(qt[4])}
+    except Exception:
+        pass
+    return None
+
 def get_open_from_result(result: pd.Series) -> pd.Series | None:
     """Extract cached open prices from a fetch_one_akshare result, if available."""
     return getattr(result, '_open', None)
@@ -306,6 +321,22 @@ def load_prices(etfs: dict, group_name: str = "default", source: str = "tencent"
             cached_open.to_csv(open_cache_file, encoding="utf-8-sig")
 
         print(f"[{source}] {len(cached)}天 ({cached.index[0].strftime('%Y-%m-%d')} ~ {cached.index[-1].strftime('%Y-%m-%d')})")
+
+    # ── 用腾讯 qt 实时行情补今天的高精度数据 ──
+    today = pd.Timestamp.now().normalize()
+    if today in cached.index:
+        for code in etfs.values():
+            qt = fetch_tencent_qt(code)
+            if qt and code in cached.columns:
+                # qt open 先于 K线到达，收盘前 qt price 比 K线收盘价新
+                cached.loc[today, code] = qt["price"]  # 用实时价作收盘价
+                # 同布补 open 缓存
+                open_cache_file = _cache_path_open(source)
+                if open_cache_file.exists():
+                    cached_open = pd.read_csv(open_cache_file, index_col=0, parse_dates=True)
+                    if code in cached_open.columns and today in cached_open.index:
+                        cached_open.loc[today, code] = qt["open"]
+                        cached_open.to_csv(open_cache_file, encoding="utf-8-sig")
 
     col_map = {code: name for name, code in etfs.items()}
     result = cached[[c for c in col_map if c in cached.columns]].rename(columns=col_map)
