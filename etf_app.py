@@ -1526,10 +1526,16 @@ if run_btn:
             exec_dk = str(tdt_ts)[:10]
             signal_trade_dates.add(exec_dk)
             if exec_timing in ("T+1开盘", "T日开盘") and open_full is not None:
-                if tnew and tnew in open_full.columns and tdt_ts in open_full.index:
-                    exec_buy_price[exec_dk] = (tnew, f"{open_full[tnew].loc[tdt_ts]:.3f}")
-                if told and told in open_full.columns and tdt_ts in open_full.index:
-                    exec_sell_price[exec_dk] = (told, f"{open_full[told].loc[tdt_ts]:.3f}")
+                if tnew:
+                    if tnew in open_full.columns and tdt_ts in open_full.index:
+                        exec_buy_price[exec_dk] = (tnew, f"{open_full[tnew].loc[tdt_ts]:.3f}")
+                    elif tnew in prices_full.columns and tdt_ts in prices_full.index:
+                        exec_buy_price[exec_dk] = (tnew, f"{prices_full[tnew].loc[tdt_ts]:.3f}")
+                if told:
+                    if told in open_full.columns and tdt_ts in open_full.index:
+                        exec_sell_price[exec_dk] = (told, f"{open_full[told].loc[tdt_ts]:.3f}")
+                    elif told in prices_full.columns and tdt_ts in prices_full.index:
+                        exec_sell_price[exec_dk] = (told, f"{prices_full[told].loc[tdt_ts]:.3f}")
             else:
                 if tnew and tdt_ts in prices_full.index and tnew in prices_full.columns:
                     exec_buy_price[exec_dk] = (tnew, f"{prices_full[tnew].loc[tdt_ts]:.3f}")
