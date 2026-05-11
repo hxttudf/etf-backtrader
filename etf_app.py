@@ -117,10 +117,11 @@ def run_backtest(prices, mode, start_date, end_date, ma_days, roc_days, min_hold
     _is_close = not _use_open and not _use_midday
     _first_bar_in_range = True if not use_open_signal else False
 
-    # T日开盘：用开盘价计算 ROC（MA 仍用收盘价表示趋势）
+    # T日开盘：用开盘价计算 MA 和 ROC
+    _ma_open = None
     _roc_open = None
     if use_open_signal and open_prices is not None:
-        _, _roc_open, _ = calc_indicators(open_prices.ffill(), ma_days, roc_days)
+        _ma_open, _roc_open, _ = calc_indicators(open_prices.ffill(), ma_days, roc_days)
 
     # signal_hist[j] = signal computed from close[j] (None before warmup)
     signal_hist: list = [None] * len(prices)
@@ -142,9 +143,9 @@ def run_backtest(prices, mode, start_date, end_date, ma_days, roc_days, min_hold
             above = {}
             for name in etf_names:
                 if use_open_signal and open_prices is not None and name in open_prices.columns:
-                    # T日开盘：px=当日开盘, MA=前日收盘MA, ROC=开盘价ROC
+                    # T日开盘：px/MA/ROC 全用开盘价
                     px = _safe_loc(open_prices, name, dt, prices, i)
-                    ma = ma60[name].iloc[i - 1] if i > 0 else ma60[name].iloc[i]
+                    ma = _ma_open[name].iloc[i] if _ma_open is not None else ma60[name].iloc[i]
                     roc = _roc_open[name].iloc[i] if _roc_open is not None else roc20[name].iloc[i]
                 else:
                     px = prices[name].iloc[i]
