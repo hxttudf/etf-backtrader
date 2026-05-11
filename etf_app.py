@@ -143,11 +143,15 @@ def run_backtest(prices, mode, start_date, end_date, ma_days, roc_days, min_hold
             above = {}
             for name in etf_names:
                 if use_open_signal and open_prices is not None and name in open_prices.columns:
-                    # T日开盘：px/MA/ROC 全用开盘价
+                    # T日开盘：用当日开盘价。若 open 没这一天数据，回退到 close
                     px = _safe_loc(open_prices, name, dt, prices, i)
-                    io = min(i, len(open_prices) - 1) if name in open_prices.columns else i
-                    ma = _ma_open[name].iloc[io] if _ma_open is not None and io < len(_ma_open) else np.nan
-                    roc = _roc_open[name].iloc[io] if _roc_open is not None and io < len(_roc_open) else np.nan
+                    # MA/ROC 用 .loc[dt]，避免 index 不对齐
+                    if dt in _ma_open.index and dt in _roc_open.index:
+                        ma = _ma_open[name].loc[dt] if not pd.isna(_ma_open[name].loc[dt]) else np.nan
+                        roc = _roc_open[name].loc[dt] if not pd.isna(_roc_open[name].loc[dt]) else np.nan
+                    else:
+                        # 当日没有 open 指标，回退到 close
+                        px, ma, roc = np.nan, np.nan, np.nan
                 else:
                     px = prices[name].iloc[i]
                     ma = ma60[name].iloc[i]
