@@ -249,7 +249,10 @@ def run_backtest(prices, mode, start_date, end_date, ma_days, roc_days, min_hold
         # Build daily signal record (after execution, holding reflects current position)
         sig_record = {'_dt': dt}
         for name in etf_names:
-            roc_v = roc20[name].iloc[i]
+            if use_open_signal and _roc_open is not None and name in _roc_open.columns and dt in _roc_open.index:
+                roc_v = _roc_open[name].loc[dt]
+            else:
+                roc_v = roc20[name].iloc[i]
             sig_record[name] = float(roc_v) if not pd.isna(roc_v) else None
         sig_record['holding'] = holding  # post-execution holding
         daily_signals.append(sig_record)
