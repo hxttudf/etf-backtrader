@@ -1966,6 +1966,24 @@ if sig_btn:
         open_prices = cached_open_prices(etfs, sel_group, source=source)
         target_dt = pd.Timestamp(sig_date.strftime("%Y-%m-%d"))
         last_data_date = prices.index[-1]
+        # 数据不足时，双源融合 EM 补齐今天数据
+        if target_dt > last_data_date and source != "em":
+            try:
+                from etf_data import _cache_path as _src_cache_path, _cache_path_open
+                em_cache = _src_cache_path("em")
+                em_open_cache = _cache_path_open("em")
+                em_cache.unlink(missing_ok=True)
+                em_open_cache.unlink(missing_ok=True)
+                st.cache_data.clear()
+                prices_em = cached_prices(etfs, sel_group, source="em")
+                open_em = cached_open_prices(etfs, sel_group, source="em")
+                if prices_em.index[-1] >= target_dt:
+                    prices = prices_em
+                    open_prices = open_em
+                    last_data_date = prices.index[-1]
+                    st.info("📡 已从东方财富补齐今日数据")
+            except Exception:
+                pass
 
         # 数据新鲜度检查
         missing_etfs = []
