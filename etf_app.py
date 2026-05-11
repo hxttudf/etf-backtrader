@@ -145,8 +145,9 @@ def run_backtest(prices, mode, start_date, end_date, ma_days, roc_days, min_hold
                 if use_open_signal and open_prices is not None and name in open_prices.columns:
                     # T日开盘：px/MA/ROC 全用开盘价
                     px = _safe_loc(open_prices, name, dt, prices, i)
-                    ma = _ma_open[name].iloc[i] if _ma_open is not None else ma60[name].iloc[i]
-                    roc = _roc_open[name].iloc[i] if _roc_open is not None else roc20[name].iloc[i]
+                    io = min(i, len(open_prices) - 1) if name in open_prices.columns else i
+                    ma = _ma_open[name].iloc[io] if _ma_open is not None and io < len(_ma_open) else np.nan
+                    roc = _roc_open[name].iloc[io] if _roc_open is not None and io < len(_roc_open) else np.nan
                 else:
                     px = prices[name].iloc[i]
                     ma = ma60[name].iloc[i]
