@@ -1508,17 +1508,13 @@ if run_btn:
         for tdt, told, tnew in trade_details:
             tdt_ts = pd.Timestamp(tdt) if not isinstance(tdt, pd.Timestamp) else tdt
             exec_dk = str(tdt_ts)[:10]
-            if exec_timing == "T+1开盘":
-                prev_dates = prices_full.index[prices_full.index < tdt_ts]
-                if len(prev_dates) > 0:
-                    sig_dk = prev_dates[-1].strftime("%Y-%m-%d")
-                    signal_trade_dates.add(sig_dk)
-                    if tnew and tnew in open_full.columns and tdt_ts in open_full.index:
-                        exec_buy_price[exec_dk] = (tnew, f"{open_full[tnew].loc[tdt_ts]:.3f}")
-                    if told and told in open_full.columns and tdt_ts in open_full.index:
-                        exec_sell_price[exec_dk] = (told, f"{open_full[told].loc[tdt_ts]:.3f}")
+            signal_trade_dates.add(exec_dk)
+            if exec_timing in ("T+1开盘", "T日开盘") and open_full is not None:
+                if tnew and tnew in open_full.columns and tdt_ts in open_full.index:
+                    exec_buy_price[exec_dk] = (tnew, f"{open_full[tnew].loc[tdt_ts]:.3f}")
+                if told and told in open_full.columns and tdt_ts in open_full.index:
+                    exec_sell_price[exec_dk] = (told, f"{open_full[told].loc[tdt_ts]:.3f}")
             else:
-                signal_trade_dates.add(exec_dk)
                 if tnew and tdt_ts in prices_full.index and tnew in prices_full.columns:
                     exec_buy_price[exec_dk] = (tnew, f"{prices_full[tnew].loc[tdt_ts]:.3f}")
                 if told and tdt_ts in prices_full.index and told in prices_full.columns:
