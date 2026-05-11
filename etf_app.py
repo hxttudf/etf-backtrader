@@ -1112,7 +1112,7 @@ mode = st.sidebar.radio("调仓模式", ["daily", "friday", "both"], horizontal=
                         index=["daily","friday","both"].index(_qp("mode", "daily")),
                         format_func=lambda x: {"daily": "每日", "friday": "周五", "both": "两者"}[x], key="sb_mode")
 source = st.sidebar.selectbox("数据源", ["tencent", "akshare", "em"],
-                              index=["tencent","akshare","em"].index(_qp("src", "akshare")),
+                              index=["tencent","akshare","em"].index(_qp("src", "akshare") if _qp("src", "akshare") in ["tencent","akshare","em"] else "akshare"),
                               format_func=lambda x: {"tencent": "腾讯财经", "akshare": "AKShare(Sina+Tencent)", "em": "东方财富(EM)"}[x], key="sb_source")
 source_hint = {"tencent": "⚠️ 仅约800交易日（~3年）", "akshare": "✅ 全历史(Sina+Tencent拼接，自ETF上市起)", "em": "✅ 前复权+开盘价（东方财富，不稳定）"}
 st.sidebar.caption(source_hint[source])
