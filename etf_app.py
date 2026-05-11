@@ -135,7 +135,7 @@ def run_backtest(prices, mode, start_date, end_date, ma_days, roc_days, min_hold
         if not started_in_range and start_date <= dt <= end_date:
             holding = None
             started_in_range = True
-            _first_bar_in_range = True
+            _first_bar_in_range = not use_open_signal  # T日开盘首根有效
 
         # ── Step 1: compute signal ──
         should_check = True if mode == "daily" else is_friday[i]
