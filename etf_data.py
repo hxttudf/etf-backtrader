@@ -304,14 +304,23 @@ def load_prices(etfs: dict, group_name: str = "default", source: str = "tencent"
         else:
             cached = cached.combine_first(new_data)
 
-        # ── 腾讯 days=0 补今天高精度数据 ──
+        # ── 腾讯 days=0 补今天高精度收盘/开盘 ──
         today_ts = pd.Timestamp.now().normalize()
         if source == "akshare" and today_ts in cached.index:
             for code in etfs.values():
                 try:
                     tod = fetch_one_tencent(code, days=0)
-                    if code in cached.columns and today_ts in tod.index:
-                        cached.loc[today_ts, code] = tod.loc[today_ts]
+                    if code not in cached.columns or today_ts not in tod.index:
+                        continue
+                    # 收盘
+                    cached.loc[today_ts, code] = tod.loc[today_ts]
+                    # 开盘（存入 open_results，后续写入 open_cache）
+                    tod_open = get_open_from_result(tod)
+                    if tod_open is not None and today_ts in tod_open.index:
+                        if code not in open_results:
+                            open_results[code] = tod_open
+                        else:
+                            open_results[code].loc[today_ts] = tod_open.loc[today_ts]
                 except Exception:
                     pass
 
