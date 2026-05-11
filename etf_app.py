@@ -1111,10 +1111,10 @@ with sb_date_col2:
 mode = st.sidebar.radio("调仓模式", ["daily", "friday", "both"], horizontal=True,
                         index=["daily","friday","both"].index(_qp("mode", "daily")),
                         format_func=lambda x: {"daily": "每日", "friday": "周五", "both": "两者"}[x], key="sb_mode")
-source = st.sidebar.selectbox("数据源", ["tencent", "akshare", "sina", "em"],
-                              index=["tencent","akshare","sina","em"].index(_qp("src", "akshare")),
-                              format_func=lambda x: {"tencent": "腾讯财经", "akshare": "AKShare(Sina+Tencent)", "sina": "AKShare(Sina纯源)", "em": "东方财富(EM)"}[x], key="sb_source")
-source_hint = {"tencent": "⚠️ 仅约800交易日（~3年）", "akshare": "✅ 全历史(Sina) + 近3年(Tencent) 拼接", "sina": "✅ 纯Sina全历史(2011起)，最稳定，不含前复权", "em": "✅ 前复权+开盘价（东方财富，不稳定）"}
+source = st.sidebar.selectbox("数据源", ["tencent", "akshare", "em"],
+                              index=["tencent","akshare","em"].index(_qp("src", "akshare")),
+                              format_func=lambda x: {"tencent": "腾讯财经", "akshare": "AKShare(Sina+Tencent)", "em": "东方财富(EM)"}[x], key="sb_source")
+source_hint = {"tencent": "⚠️ 仅约800交易日（~3年）", "akshare": "✅ 全历史(Sina+Tencent拼接，自ETF上市起)", "em": "✅ 前复权+开盘价（东方财富，不稳定）"}
 st.sidebar.caption(source_hint[source])
 ma_days = st.sidebar.slider("MA 均线天数", 10, 200, int(_qp("ma", "60")), step=5, key="sb_ma")
 roc_days = st.sidebar.slider("ROC 动量天数", 5, 120, int(_qp("roc", "20")), step=5, key="sb_roc")
