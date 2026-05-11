@@ -109,6 +109,25 @@ def fetch_one_akshare(code: str, days: int = 0) -> pd.Series:
     return result_close
 
 
+def fetch_one_sina(code: str, days: int = 0) -> pd.Series:
+    """纯 Sina 数据源 — 全量历史，不做 Tencent 拼接。最稳定。"""
+    import time
+    import akshare as ak
+    m = _market(code)
+    for attempt in range(3):
+        try:
+            df = ak.fund_etf_hist_sina(symbol=f"{m}{code}")
+            df["日期"] = pd.to_datetime(df["date"])
+            close = df.set_index("日期")["close"].sort_index()
+            open_p = df.set_index("日期")["open"].sort_index()
+            close._open = open_p
+            return close
+        except Exception as e:
+            if attempt < 2:
+                time.sleep(3 * (attempt + 1))
+            else:
+                raise ConnectionError(f"Sina 数据源不可用（{code}）: {e}")
+
 def get_open_from_result(result: pd.Series) -> pd.Series | None:
     """Extract cached open prices from a fetch_one_akshare result, if available."""
     return getattr(result, '_open', None)
@@ -146,6 +165,7 @@ def fetch_one_em(code: str, days: int = 0) -> pd.Series:
 SOURCES = {
     "tencent": fetch_one_tencent,
     "akshare": fetch_one_akshare,
+    "sina": fetch_one_sina,
     "em": fetch_one_em,
 }
 
