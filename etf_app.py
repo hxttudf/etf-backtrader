@@ -1528,13 +1528,16 @@ if run_btn:
             if fh != 'CASH' and fd not in signal_trade_dates:
                 signal_trade_dates.add(fd)
                 fdt = pd.Timestamp(fd)
-                if exec_timing not in ("T+1开盘", "T日开盘"):
-                    if fdt in prices_full.index and fh in prices_full.columns:
-                        exec_buy_price[fd] = (fh, f"{prices_full[fh].loc[fdt]:.3f}")
-                else:
+                if exec_timing == "T日开盘":
+                    if fdt in open_full.index and fh in open_full.columns:
+                        exec_buy_price[fd] = (fh, f"{open_full[fh].loc[fdt]:.3f}")
+                elif exec_timing == "T+1开盘":
                     next_d = prices_full.index[prices_full.index > fdt]
                     if len(next_d) > 0 and fh in open_full.columns and next_d[0] in open_full.index:
                         exec_buy_price[str(next_d[0])[:10]] = (fh, f"{open_full[fh].loc[next_d[0]]:.3f}")
+                else:
+                    if fdt in prices_full.index and fh in prices_full.columns:
+                        exec_buy_price[fd] = (fh, f"{prices_full[fh].loc[fdt]:.3f}")
 
         sig_rows = []
         for dk in sig_dates[-max_rows:]:
@@ -1546,7 +1549,7 @@ if run_btn:
             sell_info = exec_sell_price.get(dk)
             buy_px_str = "—"
             sell_px_str = "—"
-            if buy_info and not (exec_timing in ("T+1开盘", "T日开盘") and is_trade):
+            if buy_info and not (exec_timing == "T+1开盘" and is_trade):
                 buy_px_str = buy_info[1]
             if sell_info:
                 sell_px_str = sell_info[1]
