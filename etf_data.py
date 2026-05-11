@@ -304,6 +304,16 @@ def load_prices(etfs: dict, group_name: str = "default", source: str = "tencent"
         else:
             cached = cached.combine_first(new_data)
 
+        # ── 用腾讯 qt 实时行情补今天的高精度数据 ──
+        today_ts = pd.Timestamp.now().normalize()
+        patched = False
+        if today_ts in cached.index:
+            for code in etfs.values():
+                qt = fetch_tencent_qt(code)
+                if qt and code in cached.columns:
+                    cached.loc[today_ts, code] = qt["price"]
+                    patched = True
+
         cached.to_csv(cache_file, encoding="utf-8-sig")
 
         # Cache open prices separately when available
@@ -321,22 +331,6 @@ def load_prices(etfs: dict, group_name: str = "default", source: str = "tencent"
             cached_open.to_csv(open_cache_file, encoding="utf-8-sig")
 
         print(f"[{source}] {len(cached)}天 ({cached.index[0].strftime('%Y-%m-%d')} ~ {cached.index[-1].strftime('%Y-%m-%d')})")
-
-    # ── 用腾讯 qt 实时行情补今天的高精度数据 ──
-    today = pd.Timestamp.now().normalize()
-    if today in cached.index:
-        for code in etfs.values():
-            qt = fetch_tencent_qt(code)
-            if qt and code in cached.columns:
-                # qt open 先于 K线到达，收盘前 qt price 比 K线收盘价新
-                cached.loc[today, code] = qt["price"]  # 用实时价作收盘价
-                # 同布补 open 缓存
-                open_cache_file = _cache_path_open(source)
-                if open_cache_file.exists():
-                    cached_open = pd.read_csv(open_cache_file, index_col=0, parse_dates=True)
-                    if code in cached_open.columns and today in cached_open.index:
-                        cached_open.loc[today, code] = qt["open"]
-                        cached_open.to_csv(open_cache_file, encoding="utf-8-sig")
 
     col_map = {code: name for name, code in etfs.items()}
     result = cached[[c for c in col_map if c in cached.columns]].rename(columns=col_map)
