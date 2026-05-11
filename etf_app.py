@@ -88,7 +88,7 @@ def _safe_loc(df, col, dt, fallback_prices, i):
 
 def run_backtest(prices, mode, start_date, end_date, ma_days, roc_days, min_hold=0,
                  open_prices=None, midday_prices=None, afternoon_open_prices=None,
-                 delay=0):
+                 delay=0, use_open_signal=False):
     """Inline backtest so the app stays self-contained.
 
     信号在 T 日收盘判定，T+1 执行。
@@ -115,7 +115,12 @@ def run_backtest(prices, mode, start_date, end_date, ma_days, roc_days, min_hold
     _use_open = open_prices is not None
     _use_midday = midday_prices is not None and afternoon_open_prices is not None
     _is_close = not _use_open and not _use_midday
-    _first_bar_in_range = True  # skip trade on first bar for clean start
+    _first_bar_in_range = True if not use_open_signal else False
+
+    # T日开盘：用开盘价计算 ROC（MA 仍用收盘价表示趋势）
+    _roc_open = None
+    if use_open_signal and open_prices is not None:
+        _, _roc_open, _ = calc_indicators(open_prices.ffill(), ma_days, roc_days)
 
     # signal_hist[j] = signal computed from close[j] (None before warmup)
     signal_hist: list = [None] * len(prices)
@@ -131,28 +136,33 @@ def run_backtest(prices, mode, start_date, end_date, ma_days, roc_days, min_hold
             started_in_range = True
             _first_bar_in_range = True
 
-        # ── Step 1: compute signal from close[i] ──
+        # ── Step 1: compute signal ──
         should_check = True if mode == "daily" else is_friday[i]
         if should_check:
             above = {}
             for name in etf_names:
-                px = prices[name].iloc[i]
-                ma = ma60[name].iloc[i]
-                roc = roc20[name].iloc[i]
-                if not pd.isna(ma) and px > ma and not pd.isna(roc):
+                if use_open_signal and open_prices is not None and name in open_prices.columns:
+                    # T日开盘：px=当日开盘, MA=前日收盘MA, ROC=开盘价ROC
+                    px = _safe_loc(open_prices, name, dt, prices, i)
+                    ma = ma60[name].iloc[i - 1] if i > 0 else ma60[name].iloc[i]
+                    roc = _roc_open[name].iloc[i] if _roc_open is not None else roc20[name].iloc[i]
+                else:
+                    px = prices[name].iloc[i]
+                    ma = ma60[name].iloc[i]
+                    roc = roc20[name].iloc[i]
+                if not pd.isna(ma) and not pd.isna(px) and px > ma and not pd.isna(roc):
                     above[name] = roc
             signal_hist[i] = max(above, key=above.get) if above else None
         else:
             signal_hist[i] = signal_hist[i - 1] if i > ma_days else None
 
-        # ── Step 2: determine effective signal with delay ──
-        # MOC(收盘): 信号 close[i-delay] → 执行 close[i] (同日, delay=0时)
-        # MOO(开盘): 信号 close[i-1-delay] → 执行 open[i] (T-1信号, T开盘执行)
-        # 两者信号源相同(都是close[i-delay]), 差在执行日相差1天
-        if _is_close:
-            src = i - delay                          # MOC: 同日信号+执行
+        # ── Step 2: determine effective signal ──
+        if use_open_signal:
+            src = i  # 当日开盘信号，当日执行
+        elif _is_close:
+            src = i - delay
         else:
-            src = i - 1 - delay                      # MOO/Midday: 前日信号+当日执行
+            src = i - 1 - delay
         effective_signal = signal_hist[src] if src >= ma_days else None
 
         # ── Step 3: execute ──
@@ -450,7 +460,7 @@ def trade_win_rate(ret, trade_details, prices):
 
 def grid_search(prices, modes, start, end, ma_values, roc_values, progress_bar,
                 open_prices=None, midday_prices=None, afternoon_open_prices=None,
-                delay=0):
+                delay=0, use_open_signal=False):
     """网格搜索最优MA/ROC，返回所有结果DataFrame"""
     import itertools
 
@@ -464,7 +474,7 @@ def grid_search(prices, modes, start, end, ma_values, roc_values, progress_bar,
                 open_prices=open_prices,
                 midday_prices=midday_prices,
                 afternoon_open_prices=afternoon_open_prices,
-                delay=delay)
+                delay=delay, use_open_signal=use_open_signal)
             m = calc_metrics(nav, ret)
             wr = trade_win_rate(ret, trade_details, prices)
             rows.append({
@@ -1099,18 +1109,19 @@ compare_all = st.sidebar.checkbox("对比所有组合", value=False,
     help="同时回测所有已配置组合，并排对比关键指标")
 run_btn = st.sidebar.button("🚀 开始回测", type="primary", width='stretch')
 exec_timing = st.sidebar.selectbox("执行时机",
-    ["T+1收盘", "T+1开盘", "中午→下午"],
+    ["T+1收盘", "T+1开盘", "T日开盘", "中午→下午"],
     index=0,
     format_func=lambda x: {
         "T+1开盘": "T+1 开盘执行（T日信号+T+1日开盘买卖）",
         "T+1收盘": "当日收盘执行（T日信号+T日收盘买卖）",
+        "T日开盘": "T日开盘执行（T日开盘信号+T日开盘买卖）",
         "中午→下午": "中午信号→下午调仓（需60分钟K线）",
     }[x],
     key="sb_exec",
-    help="当日收盘=T日15:00收盘出信号+立即以收盘价换仓 | T+1开盘=T日收盘出信号+T+1日开盘价换仓 | 中午=盘中信号+下午开盘执行")
-_bt_disabled = (exec_timing == "中午→下午")
+    help="T+1收盘=T日15:00收盘出信号+收盘价换仓 | T+1开盘=T日收盘出信号+T+1日开盘价换仓 | T日开盘=T日开盘价出信号+开盘价换仓")
+_bt_disabled = (exec_timing in ("中午→下午", "T日开盘"))
 if _bt_disabled:
-    st.sidebar.info("中午执行模式下 Backtrader 不可用。MOC/MOO 均已适配 Backtrader coc/coo 模式。")
+    st.sidebar.info("中午/T日开盘执行模式下 Backtrader 不可用，使用手写引擎。")
 use_backtrader = st.sidebar.checkbox("使用 Backtrader 引擎",
     value=False if _bt_disabled else True,
     disabled=_bt_disabled,
@@ -1241,8 +1252,9 @@ if run_btn:
         open_full = cached_open_prices(etfs, sel_group, source=source)
         if open_full is not None:
             open_full = open_full[open_full.index >= lookback]
-        # Execution timing: real open for T+1开盘, midday for 中午→下午, none for T+1收盘
-        _exec_open = open_full if exec_timing == "T+1开盘" else None
+        # Execution timing configuration
+        _use_open_signal = (exec_timing == "T日开盘")  # T日开盘信号
+        _exec_open = open_full if exec_timing in ("T+1开盘", "T日开盘") else None
         _midday_prices = None
         _afternoon_open_prices = None
         _use_midday = (exec_timing == "中午→下午")
@@ -1291,7 +1303,7 @@ if run_btn:
                                  open_prices=_exec_open,
                                  midday_prices=_midday_prices,
                                  afternoon_open_prices=_afternoon_open_prices,
-                                 delay=delay)
+                                 delay=delay, use_open_signal=_use_open_signal)
             metrics_dict = calc_metrics(nav, ret)
             bench_metrics = calc_metrics(bnav, bret)
             all_metrics[m] = (metrics_dict, bench_metrics, trades, ret, nav, bnav)
@@ -1676,7 +1688,7 @@ if run_btn:
                                      open_prices=gopen_full,
                                      midday_prices=gmidday,
                                      afternoon_open_prices=gaft_open,
-                                     delay=delay)
+                                     delay=delay, use_open_signal=_use_open_signal)
                 gm = calc_metrics(gnav, gret)
                 gwr = trade_win_rate(gret, gtdets, gprices_full)
                 rows.append({
@@ -1733,7 +1745,7 @@ if run_btn:
                                  open_prices=_exec_open,
                                  midday_prices=_midday_prices,
                                  afternoon_open_prices=_afternoon_open_prices,
-                                 delay=delay)
+                                 delay=delay, use_open_signal=_use_open_signal)
             status.update(label=f"完成 {total_combo} 种组合", state="complete")
 
         # ── Result table per mode ──
