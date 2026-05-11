@@ -1528,7 +1528,7 @@ if run_btn:
             if fh != 'CASH' and fd not in signal_trade_dates:
                 signal_trade_dates.add(fd)
                 fdt = pd.Timestamp(fd)
-                if exec_timing != "T+1开盘":
+                if exec_timing not in ("T+1开盘", "T日开盘"):
                     if fdt in prices_full.index and fh in prices_full.columns:
                         exec_buy_price[fd] = (fh, f"{prices_full[fh].loc[fdt]:.3f}")
                 else:
@@ -1546,7 +1546,7 @@ if run_btn:
             sell_info = exec_sell_price.get(dk)
             buy_px_str = "—"
             sell_px_str = "—"
-            if buy_info and not (exec_timing == "T+1开盘" and is_trade):
+            if buy_info and not (exec_timing in ("T+1开盘", "T日开盘") and is_trade):
                 buy_px_str = buy_info[1]
             if sell_info:
                 sell_px_str = sell_info[1]
@@ -1600,7 +1600,7 @@ if run_btn:
                     row[f"{name} 指标"] = indicator_str
                 else: row[f"{name} 指标"] = "—"
                 # Highlight buy/sell on execution price column
-                if exec_timing == "T+1开盘":
+                if exec_timing in ("T+1开盘", "T日开盘"):
                     op = open_px if open_px != "—" else "—"
                     row[f"{name} 开盘"] = ("▶" if name==buy_etf else "") + ("◀" if name==sell_etf else "") + (f" {op}" if op!="—" else "—")
                     row[f"{name} 收盘"] = close_px
