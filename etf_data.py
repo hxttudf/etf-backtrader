@@ -20,8 +20,8 @@ def _market(code: str) -> str:
     return "sh" if code.startswith("5") else "sz"
 
 
-def fetch_one_tencent(code: str, days: int = 800) -> pd.Series:
-    """腾讯财经 — 最多约800个交易日"""
+def fetch_one_tencent(code: str, days: int = 0) -> pd.Series:
+    """腾讯财经 — 0=全量历史（3位小数），>0=最近N天（2位小数）"""
     m = _market(code)
     url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={m}{code},day,,,{days},qfq"
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -303,16 +303,6 @@ def load_prices(etfs: dict, group_name: str = "default", source: str = "tencent"
                 cached = new_data
         else:
             cached = cached.combine_first(new_data)
-
-        # ── 用腾讯 qt 实时行情补今天的高精度数据 ──
-        today_ts = pd.Timestamp.now().normalize()
-        patched = False
-        if today_ts in cached.index:
-            for code in etfs.values():
-                qt = fetch_tencent_qt(code)
-                if qt and code in cached.columns:
-                    cached.loc[today_ts, code] = qt["price"]
-                    patched = True
 
         cached.to_csv(cache_file, encoding="utf-8-sig")
 
