@@ -282,6 +282,31 @@ def calc_metrics(nav, ret):
     dd_series = nav / nav.cummax() - 1
     dd = dd_series.min()
     calmar = ann / abs(dd) if dd != 0 and ann > 0 else 0
+    # 最大回撤日期: NAV跌至谷底的日期 (回撤最深的那天)
+    max_dd_dt = dd_series.idxmin()
+    # 最长回撤持续: NAV连续低于历史峰值的最长天数
+    longest_dd_days = 0
+    longest_dd_start = None
+    longest_dd_end = None
+    cur_dd_start = None
+    cur_dd_len = 0
+    for dt, val in dd_series.items():
+        if val < 0:
+            if cur_dd_start is None:
+                cur_dd_start = dt
+            cur_dd_len += 1
+        else:
+            if cur_dd_len > longest_dd_days:
+                longest_dd_days = cur_dd_len
+                longest_dd_start = cur_dd_start
+                longest_dd_end = dd_series.index[dd_series.index.get_loc(dt) - 1]
+            cur_dd_start = None
+            cur_dd_len = 0
+    if cur_dd_len > longest_dd_days:
+        longest_dd_days = cur_dd_len
+        longest_dd_start = cur_dd_start
+        longest_dd_end = dd_series.index[-1]
+    dd_range = f"{longest_dd_start.strftime('%Y-%m-%d')} ~ {longest_dd_end.strftime('%Y-%m-%d')}" if longest_dd_start else "N/A"
     max_loss = (nav - 1).min()
     max_loss_dt = nav.idxmin()
     underwater_days = int((nav < 1).sum())
@@ -310,7 +335,9 @@ def calc_metrics(nav, ret):
         longest_loss_end = nav.index[-1]
     loss_range = f"{longest_loss_start.strftime('%Y-%m-%d')} ~ {longest_loss_end.strftime('%Y-%m-%d')}" if longest_loss_start else "N/A"
     return {"累计收益": total, "年化收益": ann, "年化波动": vol, "夏普比率": sharpe,
-            "最大回撤": dd, "卡尔玛比率": calmar, "最大亏损": max_loss,
+            "最大回撤": dd, "最大回撤日期": max_dd_dt,
+            "最长回撤持续": longest_dd_days, "最长回撤区间": dd_range,
+            "卡尔玛比率": calmar, "最大亏损": max_loss,
             "最大亏损日期": max_loss_dt, "水下天数": underwater_days, "持有天数": holding_days,
             "最长亏损持续": longest_loss_days, "最长亏损区间": loss_range}
 
@@ -699,9 +726,6 @@ def signal_for_date(prices, target_date, ma_days, roc_days):
 # ── Session state ──────────────────────────────────────────
 if "cfg" not in st.session_state:
     st.session_state.cfg = load_config()
-if st.session_state.pop("_rerun_sidebar", False):
-    st.rerun()
-
 cfg = st.session_state.cfg
 
 # ── 页面模式切换 ─────────────────────────────────────────
@@ -1122,7 +1146,9 @@ delay = st.sidebar.slider("信号延迟 (天)", 0, 5, int(_qp("delay", "0")), st
     help="0=当日收盘出信号即执行(收盘)或T+1开盘执行(开盘)。1=额外延迟1天(旧行为)")
 compare_all = st.sidebar.checkbox("对比所有组合", value=False,
     help="同时回测所有已配置组合，并排对比关键指标")
-run_btn = st.sidebar.button("🚀 开始回测", type="primary", width='stretch')
+
+_btn_clicked = st.sidebar.button("🚀 开始回测", type="primary", width='stretch')
+run_btn = _btn_clicked or ("_bt_cached" in st.session_state)
 exec_timing = st.sidebar.selectbox("执行时机",
     ["T+1收盘", "T+1开盘", "T日开盘", "中午→下午"],
     index=0,
@@ -1146,6 +1172,12 @@ strategy = st.sidebar.selectbox("策略", list(STRATEGIES.keys()),
     key="sb_strategy",
     disabled=not use_backtrader,
     help="仅 Backtrader 引擎支持多策略")
+
+# 配置变化时清除缓存，下次需要重新点击回测
+_cfg_sig = (sel_group, str(start_date), str(end_date), mode, exec_timing, use_backtrader, ma_days, roc_days, delay)
+if st.session_state.get("_cfg_sig") != _cfg_sig:
+    st.session_state.pop("_bt_cached", None)
+st.session_state["_cfg_sig"] = _cfg_sig
 
 # ── Persist to URL query params (survives F5 refresh) ──
 st.query_params.update({
@@ -1315,13 +1347,21 @@ if run_btn:
         all_metrics = {}
         daily_signals_by_mode = {}
 
+        bt_strats = {}
+        bt_holdings = {}
+        bt_navs = {}
+        bt_tlogs = {}
         for m in modes_to_run:
             if use_backtrader:
                 bt_mode = 'moc' if _exec_open is None else 'moo'
-                nav, bnav, ret, bret, trades, trade_dates, trade_details, daily_signals = \
+                nav, bnav, ret, bret, trades, trade_dates, trade_details, daily_signals, bt_strat, bt_hmap, bt_snav, bt_tlog = \
                     run_backtest_bt(prices_full, m, actual_start_str, end_str, ma_days, roc_days,
                                     strategy=bt_mode, open_prices=_exec_open,
                                     exec_mode=bt_mode, delay=delay)
+                bt_strats[m] = bt_strat
+                bt_holdings[m] = bt_hmap
+                bt_navs[m] = bt_snav
+                bt_tlogs[m] = bt_tlog
             else:
                 nav, bnav, ret, bret, trades, trade_dates, trade_details, daily_signals = \
                     run_backtest(prices_full, m, actual_start_str, end_str, ma_days, roc_days,
@@ -1335,8 +1375,7 @@ if run_btn:
             modes_data[m] = (nav, bnav, trade_dates, trade_details)
             daily_signals_by_mode[m] = daily_signals
 
-        # 触发侧边栏时间戳刷新（数据可能被重新拉取）
-        st.session_state["_rerun_sidebar"] = True
+        st.session_state["_bt_cached"] = True
 
         st.subheader(f"回测结果: {sel_group}  |  {actual_start_str} ~ {end_str}")
 
@@ -1360,12 +1399,12 @@ if run_btn:
                         cols[ci].metric(key, f"{buys}", help=metric_help.get(key))
                     elif key == "卖出次数":
                         cols[ci].metric(key, f"{sells}", help=metric_help.get(key))
-                    elif key in ("持有天数", "水下天数", "最长亏损持续"):
+                    elif key in ("持有天数", "水下天数", "最长亏损持续", "最长回撤持续"):
                         cols[ci].metric(key, f"{int(mm.get(key, 0))}", help=metric_help.get(key))
-                    elif key == "最长亏损区间":
+                    elif key in ("最长亏损区间", "最长回撤区间"):
                         cols[ci].metric(key, mm.get(key, "N/A"), help=metric_help.get(key))
-                    elif key == "最大亏损日期":
-                        dt_val = mm.get("最大亏损日期")
+                    elif key in ("最大亏损日期", "最大回撤日期"):
+                        dt_val = mm.get(key)
                         dt_valid = dt_val if dt_val is not None and not pd.isna(dt_val) else None
                         cols[ci].metric(key, dt_valid.strftime("%Y-%m-%d") if dt_valid else "N/A", help=metric_help.get(key))
                     elif key == "胜率":
@@ -1383,6 +1422,9 @@ if run_btn:
             "年化收益": "年化复合收益率，按 252 个交易日折算",
             "夏普比率": "(年化收益 - 无风险利率 3%) / 年化波动率，衡量风险调整后收益",
             "最大回撤": "策略净值从峰值到谷底的最大跌幅（峰值不一定是1.0）",
+            "最大回撤日期": "回撤最深的具体交易日（净值跌至谷底的日期）",
+            "最长回撤持续": "净值连续低于历史峰值的最大交易日数（含持仓期和空仓期）",
+            "最长回撤区间": "最长连续回撤期的起止日期",
             "最大亏损": "策略净值相对本金(1.0)的最大亏损，衡量实际亏本金额度。下方显示最大亏损发生日期",
             "最大亏损日期": "最大亏损发生的具体交易日",
             "持有天数": "回测区间内的有效交易日总数",
@@ -1394,16 +1436,23 @@ if run_btn:
             "卖出次数": "策略发出的卖出信号次数（卖出某ETF）",
             "胜率": "获胜交易数÷总交易数，每笔买入→卖出记一次",
         }
-        metric_keys = ["累计收益", "年化收益", "夏普比率", "最大回撤", "最大亏损",
-                       "最大亏损日期", "水下天数", "最长亏损持续", "最长亏损区间",
+        metric_keys = ["累计收益", "年化收益", "夏普比率", "最大回撤", "最大回撤日期",
+                       "最长回撤持续", "最长回撤区间",
+                       "最大亏损", "最大亏损日期", "水下天数", "最长亏损持续", "最长亏损区间",
                        "持有天数", "卡尔玛比率", "买入次数", "卖出次数", "胜率"]
         render_metrics(mm, trades, wr, buys, sells, metric_keys)
         pos_fn = position_dist_bt if use_backtrader else position_dist
         pos_args = (prices_full, actual_start_str, end_str, m, ma_days, roc_days)
         if use_backtrader:
-            pos_kwargs = dict(strategy=bt_mode)
+            pos_kwargs = dict(strategy=bt_mode, exec_mode=bt_mode)
             pos_kwargs['open_prices'] = _exec_open
             pos_kwargs['min_hold'] = 0
+            if bt_strats.get(m) is not None:
+                pos_kwargs['strat'] = bt_strats[m]
+            elif bt_holdings.get(m) is not None:
+                pos_kwargs['holding_map'] = bt_holdings[m]
+                pos_kwargs['strat_nav'] = bt_navs[m]
+                pos_kwargs['trade_log'] = bt_tlogs[m]
         else:
             pos_kwargs = {}
         pos_days, pos_buys, pos_contrib, pos_cum, pos_wr = pos_fn(*pos_args, **pos_kwargs)
@@ -1708,7 +1757,7 @@ if run_btn:
             for m in modes_to_run:
                 if use_backtrader:
                     bt_m = 'moc' if gopen_full is None else 'moo'
-                    gnav, gbnav, gret, gbret, gtrades, gtd, gtdets, _ = \
+                    gnav, gbnav, gret, gbret, gtrades, gtd, gtdets, _, _, _, _, _ = \
                         run_backtest_bt(gprices_full, m, gactual_str, end_str, ma_days, roc_days,
                                         strategy=bt_m, open_prices=gopen_full,
                                         exec_mode=bt_m, delay=delay)
