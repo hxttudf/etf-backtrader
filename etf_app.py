@@ -1296,6 +1296,235 @@ with st.sidebar.expander("⏰ 实操指南"):
         "若最新数据日期≠今天，说明数据源尚未更新，请等待30-60分钟后重试。"
     )
 
+def _strategy_signal_for_date(prices, target_date, strategy, ma_days=60, roc_days=20,
+                              open_prices=None):
+    """计算指定策略在指定日期的信号和指标值"""
+    dt = pd.Timestamp(target_date)
+    if dt not in prices.index:
+        available = prices.index[prices.index <= dt]
+        if len(available) == 0:
+            return None, None, None
+        dt = available[-1]
+
+    prev_dt = prices.index[prices.index < dt]
+    prev_dt = prev_dt[-1] if len(prev_dt) > 0 else None
+
+    p = prices.ffill()
+    rows = []
+    candidates = {}
+
+    for name in prices.columns:
+        px = float(prices[name].loc[dt]) if dt in prices.index else float('nan')
+        is_valid = dt in prices[name].dropna().index
+
+        row = {"ETF": name}
+
+        if open_prices is not None and name in open_prices.columns and dt in open_prices.index:
+            row["开盘价"] = float(open_prices[name].loc[dt])
+        else:
+            row["开盘价"] = None
+
+        row["收盘价"] = px
+
+        if prev_dt is not None and prev_dt in prices.index:
+            prev_px = prices[name].loc[prev_dt]
+            if not pd.isna(px) and not pd.isna(prev_px) and prev_px > 0:
+                row["涨幅"] = (px / prev_px) - 1
+            else:
+                row["涨幅"] = None
+        else:
+            row["涨幅"] = None
+
+        if strategy == "momentum":
+            ma = float(p[name].rolling(ma_days).mean().loc[dt])
+            roc = float(p[name].pct_change(roc_days, fill_method=None).loc[dt])
+            row[f"MA{ma_days}"] = ma
+            row[f"ROC{roc_days}"] = roc
+            if is_valid and not pd.isna(ma) and px > ma and not pd.isna(roc):
+                candidates[name] = roc
+        elif strategy == "rsi":
+            delta = p[name].diff()
+            gain = delta.clip(lower=0).ewm(alpha=1/14, min_periods=14).mean()
+            loss = (-delta.clip(upper=0)).ewm(alpha=1/14, min_periods=14).mean()
+            rs = gain / loss
+            rsi = 100 - (100 / (1 + rs))
+            rsi_val = float(rsi.loc[dt])
+            row["RSI(14)"] = rsi_val
+            if is_valid and not pd.isna(rsi_val) and rsi_val < 40:
+                candidates[name] = rsi_val
+        elif strategy == "bb":
+            sma = p[name].rolling(20).mean()
+            std = p[name].rolling(20).std()
+            upper = sma + 2 * std
+            lower = sma - 2 * std
+            pct_b = (px - float(lower.loc[dt])) / (float(upper.loc[dt]) - float(lower.loc[dt])) if float(upper.loc[dt]) != float(lower.loc[dt]) else float('nan')
+            row["BB(20,2) %B"] = pct_b
+            if is_valid and not pd.isna(pct_b) and pct_b < 0.3:
+                candidates[name] = pct_b
+        elif strategy == "macd":
+            ema12 = p[name].ewm(span=12).mean()
+            ema26 = p[name].ewm(span=26).mean()
+            macd_line = ema12 - ema26
+            signal_line = macd_line.ewm(span=9).mean()
+            histogram = float(macd_line.loc[dt]) - float(signal_line.loc[dt])
+            row["MACD柱状线"] = histogram
+            if is_valid and not pd.isna(histogram) and histogram > 0:
+                candidates[name] = histogram
+        elif strategy == "mom_rsi":
+            ma = float(p[name].rolling(ma_days).mean().loc[dt])
+            roc = float(p[name].pct_change(roc_days, fill_method=None).loc[dt])
+            delta = p[name].diff()
+            gain = delta.clip(lower=0).ewm(alpha=1/14, min_periods=14).mean()
+            loss = (-delta.clip(upper=0)).ewm(alpha=1/14, min_periods=14).mean()
+            rs = gain / loss
+            rsi = 100 - (100 / (1 + rs))
+            rsi_val = float(rsi.loc[dt])
+            row[f"MA{ma_days}"] = ma
+            row[f"ROC{roc_days}"] = roc
+            row["RSI(14)"] = rsi_val
+            if is_valid and not pd.isna(ma) and px > ma and not pd.isna(roc) and not pd.isna(rsi_val) and rsi_val < 70:
+                candidates[name] = roc
+        elif strategy == "mom_bb":
+            ma = float(p[name].rolling(ma_days).mean().loc[dt])
+            roc = float(p[name].pct_change(roc_days, fill_method=None).loc[dt])
+            sma = p[name].rolling(20).mean()
+            std = p[name].rolling(20).std()
+            upper = sma + 2 * std
+            lower = sma - 2 * std
+            pct_b = (px - float(lower.loc[dt])) / (float(upper.loc[dt]) - float(lower.loc[dt])) if float(upper.loc[dt]) != float(lower.loc[dt]) else float('nan')
+            row[f"MA{ma_days}"] = ma
+            row[f"ROC{roc_days}"] = roc
+            row["BB(20,2) %B"] = pct_b
+            if is_valid and not pd.isna(ma) and px > ma and not pd.isna(roc) and not pd.isna(pct_b) and pct_b < 0.8:
+                candidates[name] = roc
+        elif strategy == "vol_weighted":
+            ma = float(p[name].rolling(ma_days).mean().loc[dt])
+            roc = float(p[name].pct_change(roc_days, fill_method=None).loc[dt])
+            vol = float(p[name].pct_change(fill_method=None).rolling(60).std().loc[dt])
+            sharpe = roc / (vol * math.sqrt(252)) if not pd.isna(vol) and vol > 0 else float('nan')
+            row[f"MA{ma_days}"] = ma
+            row[f"ROC{roc_days}"] = roc
+            row["年化Sharpe"] = sharpe
+            if is_valid and not pd.isna(ma) and px > ma and not pd.isna(roc) and not pd.isna(sharpe):
+                candidates[name] = sharpe
+        elif strategy == "stop_loss":
+            ma = float(p[name].rolling(ma_days).mean().loc[dt])
+            roc = float(p[name].pct_change(roc_days, fill_method=None).loc[dt])
+            row[f"MA{ma_days}"] = ma
+            row[f"ROC{roc_days}"] = roc
+            if is_valid and not pd.isna(ma) and px > ma and not pd.isna(roc):
+                candidates[name] = roc
+
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+
+    ma_col = f"MA{ma_days}"
+    if ma_col in df.columns:
+        df["MA通过"] = df.apply(
+            lambda r: "✓" if (pd.notna(r.get(ma_col)) and pd.notna(r["收盘价"])
+                              and r["收盘价"] > r[ma_col]) else "✗", axis=1)
+    else:
+        df["MA通过"] = "—"
+
+    rank_cfg = {
+        "momentum": (f"ROC{roc_days}", "desc"), "rsi": ("RSI(14)", "asc"),
+        "bb": ("BB(20,2) %B", "asc"), "macd": ("MACD柱状线", "desc"),
+        "mom_rsi": (f"ROC{roc_days}", "desc"), "mom_bb": (f"ROC{roc_days}", "desc"),
+        "vol_weighted": (f"ROC{roc_days}", "desc"), "stop_loss": (f"ROC{roc_days}", "desc"),
+        "dual_lookback": (f"ROC{roc_days}", "desc"), "trend_strength": (f"ROC{roc_days}", "desc"),
+    }
+    rc = rank_cfg.get(strategy)
+    if rc:
+        rank_col, sort_order = rc
+        if rank_col in df.columns:
+            ascending = sort_order == "asc"
+            df["排名"] = df[rank_col].rank(ascending=ascending, na_option="bottom").astype("Int64")
+
+    if strategy in ("momentum", "mom_rsi", "mom_bb", "macd", "stop_loss"):
+        best = max(candidates, key=candidates.get) if candidates else None
+    elif strategy == "vol_weighted":
+        best = max(candidates, key=candidates.get) if candidates else None
+    elif strategy in ("rsi", "bb"):
+        best = min(candidates, key=candidates.get) if candidates else None
+    else:
+        best = None
+
+    return best, df, dt
+
+
+# ── Signal query (top of main area) ─────────────────────
+if sig_btn:
+    etfs = cfg["groups"][sel_group]
+    strategy_labels = {"momentum": "动量轮动", "rsi": "RSI均值回归", "bb": "布林带均值回归", "macd": "MACD趋势跟随", "mom_rsi": "动量+RSI过滤", "mom_bb": "动量+布林带过滤", "vol_weighted": "波动率加权", "dual_lookback": "双周期动量", "trend_strength": "趋势确认动量", "stop_loss": "动量+移动止损"}
+    with st.spinner("查询信号..."):
+        prices = cached_prices(etfs, sel_group, source=source)
+        open_prices = cached_open_prices(etfs, sel_group, source=source)
+        target_dt = pd.Timestamp(sig_date.strftime("%Y-%m-%d"))
+        last_data_date = prices.index[-1]
+
+        missing_etfs = []
+        stale_etfs = {}
+        today = pd.Timestamp.now().normalize()
+        if last_data_date < today - pd.Timedelta(days=1):
+            st.warning(f"⚠️ 缓存数据最新日期为 {last_data_date.strftime('%Y-%m-%d')}，可能不是最新。如需拉取最新数据请点「刷新数据缓存」按钮。")
+        if target_dt > last_data_date:
+            st.warning(f"⚠️ 查询日期 {target_dt.strftime('%Y-%m-%d')} 超出数据范围，使用最新数据 {last_data_date.strftime('%Y-%m-%d')} 计算信号")
+            sig_date_actual = last_data_date
+        else:
+            sig_date_actual = target_dt
+            for name in etfs:
+                if target_dt in prices.index:
+                    px = prices[name].loc[target_dt]
+                    if pd.isna(px):
+                        valid = prices[name].loc[:target_dt].dropna()
+                        if len(valid) > 0:
+                            stale_etfs[name] = valid.index[-1]
+                        else:
+                            missing_etfs.append(name)
+
+        best, df, actual_dt = _strategy_signal_for_date(
+            prices, sig_date_actual.strftime("%Y-%m-%d"), strategy, ma_days, roc_days,
+            open_prices=open_prices)
+
+    if df is None:
+        st.warning("数据不足，无法查询")
+    else:
+        st.subheader(f"信号 [{strategy_labels.get(strategy, strategy)}]: {actual_dt.strftime('%Y-%m-%d')} [{sel_group}]")
+
+        if stale_etfs:
+            stale_list = "、".join(f"{name}(最近: {d.strftime('%m-%d')})" for name, d in stale_etfs.items())
+            st.warning(f"⚠️ 以下ETF在查询日期无数据，使用了前值填充(ffill)：{stale_list}。信号可能基于非真实数据，请谨慎参考。")
+
+        recent = prices.iloc[-10:]
+        gap_etfs = []
+        for name in prices.columns:
+            if recent[name].isna().all():
+                last_valid = prices[name].dropna().index[-1]
+                gap_etfs.append((name, last_valid))
+        if gap_etfs:
+            gap_list = "、".join(f"{n}(最近: {d.strftime('%m-%d')})" for n, d in gap_etfs)
+            st.warning(f"⚠️ 以下ETF近期完全无数据（数据源可能部分失效）：{gap_list}。建议切换数据源。")
+        if missing_etfs:
+            missing_list = "、".join(missing_etfs)
+            st.error(f"❌ 以下ETF完全没有可用数据：{missing_list}")
+
+        etf_codes_map = {name: code for name, code in etfs.items()}
+        if best:
+            best_code = etf_codes_map.get(best, '')
+            st.success(f"持有 **{best} ({best_code})**")
+        else:
+            st.warning("空仓")
+
+        df["ETF"] = df["ETF"].apply(lambda n: f"{n} ({etf_codes_map.get(n, '')})")
+        if "涨幅" in df.columns:
+            df["涨幅"] = df["涨幅"].apply(lambda v: f"{v:+.2%}" if pd.notna(v) else "—")
+        if "开盘价" in df.columns:
+            df["开盘价"] = df["开盘价"].apply(lambda v: f"{v:.3f}" if pd.notna(v) else "—")
+        if "收盘价" in df.columns:
+            df["收盘价"] = df["收盘价"].apply(lambda v: f"{v:.3f}" if pd.notna(v) else "—")
+        st.dataframe(df, hide_index=True, width='content')
+
 # ── Main area ────────────────────────────────────────────
 if run_btn:
     etfs = cfg["groups"][sel_group]
@@ -1850,242 +2079,5 @@ if run_btn:
         csv = df_opt.to_csv(index=False, encoding="utf-8-sig")
         st.download_button("📥 下载全量CSV", csv, "etf_optimize.csv", "text/csv", width='stretch')
 
-def _strategy_signal_for_date(prices, target_date, strategy, ma_days=60, roc_days=20,
-                              open_prices=None):
-    """计算指定策略在指定日期的信号和指标值"""
-    dt = pd.Timestamp(target_date)
-    if dt not in prices.index:
-        available = prices.index[prices.index <= dt]
-        if len(available) == 0:
-            return None, None, None
-        dt = available[-1]
-
-    # Find previous valid date for daily change calculation
-    prev_dt = prices.index[prices.index < dt]
-    prev_dt = prev_dt[-1] if len(prev_dt) > 0 else None
-
-    p = prices.ffill()
-    rows = []
-    candidates = {}
-
-    for name in prices.columns:
-        px = float(prices[name].loc[dt]) if dt in prices.index else float('nan')
-        is_valid = dt in prices[name].dropna().index
-
-        row = {"ETF": name}
-
-        # Open price
-        if open_prices is not None and name in open_prices.columns and dt in open_prices.index:
-            row["开盘价"] = float(open_prices[name].loc[dt])
-        else:
-            row["开盘价"] = None
-
-        row["收盘价"] = px
-
-        # Daily change
-        if prev_dt is not None and prev_dt in prices.index:
-            prev_px = prices[name].loc[prev_dt]
-            if not pd.isna(px) and not pd.isna(prev_px) and prev_px > 0:
-                row["涨幅"] = (px / prev_px) - 1
-            else:
-                row["涨幅"] = None
-        else:
-            row["涨幅"] = None
-
-        if strategy == "momentum":
-            ma = float(p[name].rolling(ma_days).mean().loc[dt])
-            roc = float(p[name].pct_change(roc_days, fill_method=None).loc[dt])
-            row[f"MA{ma_days}"] = ma
-            row[f"ROC{roc_days}"] = roc
-            if is_valid and not pd.isna(ma) and px > ma and not pd.isna(roc):
-                candidates[name] = roc
-        elif strategy == "rsi":
-            delta = p[name].diff()
-            gain = delta.clip(lower=0).ewm(alpha=1/14, min_periods=14).mean()
-            loss = (-delta.clip(upper=0)).ewm(alpha=1/14, min_periods=14).mean()
-            rs = gain / loss
-            rsi = 100 - (100 / (1 + rs))
-            rsi_val = float(rsi.loc[dt])
-            row["RSI(14)"] = rsi_val
-            if is_valid and not pd.isna(rsi_val) and rsi_val < 40:
-                candidates[name] = rsi_val
-        elif strategy == "bb":
-            sma = p[name].rolling(20).mean()
-            std = p[name].rolling(20).std()
-            upper = sma + 2 * std
-            lower = sma - 2 * std
-            pct_b = (px - float(lower.loc[dt])) / (float(upper.loc[dt]) - float(lower.loc[dt])) if float(upper.loc[dt]) != float(lower.loc[dt]) else float('nan')
-            row["BB(20,2) %B"] = pct_b
-            if is_valid and not pd.isna(pct_b) and pct_b < 0.3:
-                candidates[name] = pct_b
-        elif strategy == "macd":
-            ema12 = p[name].ewm(span=12).mean()
-            ema26 = p[name].ewm(span=26).mean()
-            macd_line = ema12 - ema26
-            signal_line = macd_line.ewm(span=9).mean()
-            histogram = float(macd_line.loc[dt]) - float(signal_line.loc[dt])
-            row["MACD柱状线"] = histogram
-            if is_valid and not pd.isna(histogram) and histogram > 0:
-                candidates[name] = histogram
-        elif strategy == "mom_rsi":
-            ma = float(p[name].rolling(ma_days).mean().loc[dt])
-            roc = float(p[name].pct_change(roc_days, fill_method=None).loc[dt])
-            delta = p[name].diff()
-            gain = delta.clip(lower=0).ewm(alpha=1/14, min_periods=14).mean()
-            loss = (-delta.clip(upper=0)).ewm(alpha=1/14, min_periods=14).mean()
-            rs = gain / loss
-            rsi = 100 - (100 / (1 + rs))
-            rsi_val = float(rsi.loc[dt])
-            row[f"MA{ma_days}"] = ma
-            row[f"ROC{roc_days}"] = roc
-            row["RSI(14)"] = rsi_val
-            if is_valid and not pd.isna(ma) and px > ma and not pd.isna(roc) and not pd.isna(rsi_val) and rsi_val < 70:
-                candidates[name] = roc
-        elif strategy == "mom_bb":
-            ma = float(p[name].rolling(ma_days).mean().loc[dt])
-            roc = float(p[name].pct_change(roc_days, fill_method=None).loc[dt])
-            sma = p[name].rolling(20).mean()
-            std = p[name].rolling(20).std()
-            upper = sma + 2 * std
-            lower = sma - 2 * std
-            pct_b = (px - float(lower.loc[dt])) / (float(upper.loc[dt]) - float(lower.loc[dt])) if float(upper.loc[dt]) != float(lower.loc[dt]) else float('nan')
-            row[f"MA{ma_days}"] = ma
-            row[f"ROC{roc_days}"] = roc
-            row["BB(20,2) %B"] = pct_b
-            if is_valid and not pd.isna(ma) and px > ma and not pd.isna(roc) and not pd.isna(pct_b) and pct_b < 0.8:
-                candidates[name] = roc
-        elif strategy == "vol_weighted":
-            ma = float(p[name].rolling(ma_days).mean().loc[dt])
-            roc = float(p[name].pct_change(roc_days, fill_method=None).loc[dt])
-            vol = float(p[name].pct_change(fill_method=None).rolling(60).std().loc[dt])
-            sharpe = roc / (vol * math.sqrt(252)) if not pd.isna(vol) and vol > 0 else float('nan')
-            row[f"MA{ma_days}"] = ma
-            row[f"ROC{roc_days}"] = roc
-            row["年化Sharpe"] = sharpe
-            if is_valid and not pd.isna(ma) and px > ma and not pd.isna(roc) and not pd.isna(sharpe):
-                candidates[name] = sharpe
-        elif strategy == "stop_loss":
-            ma = float(p[name].rolling(ma_days).mean().loc[dt])
-            roc = float(p[name].pct_change(roc_days, fill_method=None).loc[dt])
-            row[f"MA{ma_days}"] = ma
-            row[f"ROC{roc_days}"] = roc
-            if is_valid and not pd.isna(ma) and px > ma and not pd.isna(roc):
-                candidates[name] = roc
-
-        rows.append(row)
-
-    df = pd.DataFrame(rows)
-
-    # Add MA pass column
-    ma_col = f"MA{ma_days}"
-    if ma_col in df.columns:
-        df["MA通过"] = df.apply(
-            lambda r: "✓" if (pd.notna(r.get(ma_col)) and pd.notna(r["收盘价"])
-                              and r["收盘价"] > r[ma_col]) else "✗", axis=1)
-    else:
-        df["MA通过"] = "—"
-
-    # Add ranking column based on strategy's scoring metric
-    rank_cfg = {
-        "momentum": (f"ROC{roc_days}", "desc"), "rsi": ("RSI(14)", "asc"),
-        "bb": ("BB(20,2) %B", "asc"), "macd": ("MACD柱状线", "desc"),
-        "mom_rsi": (f"ROC{roc_days}", "desc"), "mom_bb": (f"ROC{roc_days}", "desc"),
-        "vol_weighted": (f"ROC{roc_days}", "desc"), "stop_loss": (f"ROC{roc_days}", "desc"),
-        "dual_lookback": (f"ROC{roc_days}", "desc"), "trend_strength": (f"ROC{roc_days}", "desc"),
-    }
-    rc = rank_cfg.get(strategy)
-    if rc:
-        rank_col, sort_order = rc
-        if rank_col in df.columns:
-            ascending = sort_order == "asc"
-            df["排名"] = df[rank_col].rank(ascending=ascending, na_option="bottom").astype("Int64")
-
-    if strategy in ("momentum", "mom_rsi", "mom_bb", "macd", "stop_loss"):
-        best = max(candidates, key=candidates.get) if candidates else None
-    elif strategy == "vol_weighted":
-        best = max(candidates, key=candidates.get) if candidates else None
-    elif strategy in ("rsi", "bb"):
-        best = min(candidates, key=candidates.get) if candidates else None
-    else:
-        best = None
-
-    return best, df, dt
 
 
-# ── Signal query ─────────────────────────────────────────
-if sig_btn:
-    etfs = cfg["groups"][sel_group]
-    strategy_labels = {"momentum": "动量轮动", "rsi": "RSI均值回归", "bb": "布林带均值回归", "macd": "MACD趋势跟随", "mom_rsi": "动量+RSI过滤", "mom_bb": "动量+布林带过滤", "vol_weighted": "波动率加权", "dual_lookback": "双周期动量", "trend_strength": "趋势确认动量", "stop_loss": "动量+移动止损"}
-    with st.spinner("查询信号..."):
-        prices = cached_prices(etfs, sel_group, source=source)
-        open_prices = cached_open_prices(etfs, sel_group, source=source)
-        target_dt = pd.Timestamp(sig_date.strftime("%Y-%m-%d"))
-        last_data_date = prices.index[-1]
-
-        # 数据新鲜度检查
-        missing_etfs = []
-        stale_etfs = {}
-        today = pd.Timestamp.now().normalize()
-        if last_data_date < today - pd.Timedelta(days=1):
-            st.warning(f"⚠️ 缓存数据最新日期为 {last_data_date.strftime('%Y-%m-%d')}，可能不是最新。如需拉取最新数据请点「刷新数据缓存」按钮。")
-        if target_dt > last_data_date:
-            st.warning(f"⚠️ 查询日期 {target_dt.strftime('%Y-%m-%d')} 超出数据范围，使用最新数据 {last_data_date.strftime('%Y-%m-%d')} 计算信号")
-            sig_date_actual = last_data_date
-        else:
-            sig_date_actual = target_dt
-            for name in etfs:
-                if target_dt in prices.index:
-                    px = prices[name].loc[target_dt]
-                    if pd.isna(px):
-                        # 找到最近的可用日期
-                        valid = prices[name].loc[:target_dt].dropna()
-                        if len(valid) > 0:
-                            stale_etfs[name] = valid.index[-1]
-                        else:
-                            missing_etfs.append(name)
-
-        best, df, actual_dt = _strategy_signal_for_date(
-            prices, sig_date_actual.strftime("%Y-%m-%d"), strategy, ma_days, roc_days,
-            open_prices=open_prices)
-
-    if df is None:
-        st.warning("数据不足，无法查询")
-    else:
-        st.subheader(f"信号 [{strategy_labels.get(strategy, strategy)}]: {actual_dt.strftime('%Y-%m-%d')} [{sel_group}]")
-
-        # 数据新鲜度警告
-        if stale_etfs:
-            stale_list = "、".join(f"{name}(最近: {d.strftime('%m-%d')})" for name, d in stale_etfs.items())
-            st.warning(f"⚠️ 以下ETF在查询日期无数据，使用了前值填充(ffill)：{stale_list}。信号可能基于非真实数据，请谨慎参考。")
-
-        # Check for systematic data gaps (e.g. source partially failing)
-        recent = prices.iloc[-10:]
-        gap_etfs = []
-        for name in prices.columns:
-            if recent[name].isna().all():
-                last_valid = prices[name].dropna().index[-1]
-                gap_etfs.append((name, last_valid))
-        if gap_etfs:
-            gap_list = "、".join(f"{n}(最近: {d.strftime('%m-%d')})" for n, d in gap_etfs)
-            st.warning(f"⚠️ 以下ETF近期完全无数据（数据源可能部分失效）：{gap_list}。建议切换数据源。")
-        if missing_etfs:
-            missing_list = "、".join(missing_etfs)
-            st.error(f"❌ 以下ETF完全没有可用数据：{missing_list}")
-
-        # Add ETF codes to display
-        etf_codes_map = {name: code for name, code in etfs.items()}
-        if best:
-            best_code = etf_codes_map.get(best, '')
-            st.success(f"持有 **{best} ({best_code})**")
-        else:
-            st.warning("空仓")
-
-        df["ETF"] = df["ETF"].apply(lambda n: f"{n} ({etf_codes_map.get(n, '')})")
-        # Format 涨幅 as percentage
-        if "涨幅" in df.columns:
-            df["涨幅"] = df["涨幅"].apply(lambda v: f"{v:+.2%}" if pd.notna(v) else "—")
-        if "开盘价" in df.columns:
-            df["开盘价"] = df["开盘价"].apply(lambda v: f"{v:.3f}" if pd.notna(v) else "—")
-        if "收盘价" in df.columns:
-            df["收盘价"] = df["收盘价"].apply(lambda v: f"{v:.3f}" if pd.notna(v) else "—")
-        st.dataframe(df, hide_index=True, width='content')
