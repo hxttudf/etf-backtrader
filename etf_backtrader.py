@@ -1191,7 +1191,8 @@ def _convert_output(strat, prices, start_date, end_date, etf_names):
     trades = len(trade_details)
     trade_dates = [pd.Timestamp(t[0]) for t in trade_details]
 
-    return nav, bench_nav, ret, bench_ret, trades, trade_dates, trade_details, strat._daily_signals
+    return (nav, bench_nav, ret, bench_ret, trades, trade_dates, trade_details,
+            strat._daily_signals, strat, None, None, None)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1208,7 +1209,7 @@ def run_backtest_bt(prices, mode, start_date, end_date, ma_days=60, roc_days=25,
     3. coc=True: 订单在同 bar 收盘价成交 (MOC); coo=True: 在 next_open 开盘价成交 (MOO)
     4. NAV 直接从 broker.getvalue() 提取, 无需清理 warmup 仓位
 
-    返回 (nav, bench_nav, ret, bench_ret, trades, trade_details, daily_signals)
+    返回 (nav, bench_nav, ret, bench_ret, trades, trade_details, daily_signals, strat)
     """
     from etf_data import calc_indicators as _calc
 
@@ -1232,8 +1233,14 @@ def run_backtest_bt(prices, mode, start_date, end_date, ma_days=60, roc_days=25,
     if exec_mode == 'moo':
         _fn = _get_manual_bt()
         if _fn:
-            return _fn(prices, mode, start_date, end_date, ma_days, roc_days, min_hold,
-                       open_prices=open_prices, delay=delay)
+            result = _fn(prices, mode, start_date, end_date, ma_days, roc_days, min_hold,
+                         open_prices=open_prices, delay=delay)
+            nav, bench_nav, ret, bench_ret, trades, trade_dates, trade_details, daily_signals = result
+            # Build holding_map and NAV from manual engine for position_dist_bt
+            holding_map = {pd.Timestamp(s['_dt']): s.get('holding') or 'CASH' for s in daily_signals}
+            strat_nav = nav.copy()
+            return (nav, bench_nav, ret, bench_ret, trades, trade_dates, trade_details,
+                    daily_signals, None, holding_map, strat_nav, trade_details)
         raise RuntimeError("Manual run_backtest not available for MOO fallback")
 
     # MOC: Backtrader coc with date-indexed pre-computed MA/ROC. Verified.
@@ -1262,25 +1269,76 @@ def run_backtest_bt(prices, mode, start_date, end_date, ma_days=60, roc_days=25,
 # ═══════════════════════════════════════════════════════════
 
 def position_dist_bt(prices, start_date, end_date, mode, ma_days=60, roc_days=25, min_hold=0,
-                     strategy='moc', open_prices=None, exec_mode='moc'):
+                     strategy='moc', open_prices=None, exec_mode='moc',
+                     strat=None, strat_nav=None, holding_map=None, trade_log=None):
     """与原 position_dist() 签名和返回值完全一致
 
+    strat: Backtrader策略对象(MOC)。strat_nav/holding_map/trade_log: 手动引擎数据(MOO)。
+    提供任一组数据时跳过内部回测，直接复用。
     返回 (持有天数dict, 买入次数dict, 收益占比dict, 持有期累计收益dict, 胜率dict)
     """
     etf_names = list(prices.columns)
-    cerebro = _setup_cerebro(prices, mode, ma_days, roc_days, min_hold, strategy,
-                             start_date=start_date, end_date=end_date,
-                             open_prices=open_prices, exec_mode=exec_mode)
-    results = cerebro.run()
-    strat = results[0]
 
-    daily_ret = prices.pct_change(fill_method=None)
+    if strat is not None:
+        # MOC: use Backtrader strategy object
+        value_map = {dt: v for dt, v in strat._daily_value}
+        nav_raw = pd.Series(value_map, name='nav').sort_index()
+        holding_map = {dt: h for dt, h in strat._daily_holding}
+        trade_log = strat._trade_log
+        start_ts = pd.Timestamp(start_date)
+        end_ts = pd.Timestamp(end_date)
+        strat_nav = nav_raw[(nav_raw.index >= start_ts) & (nav_raw.index <= end_ts)]
+        if len(strat_nav) > 0:
+            strat_nav = strat_nav / strat_nav.iloc[0]
+        COMM = 0.0001; STAMP = 0.0005
+        trade_dates_set = {pd.Timestamp(t[0]) for t in trade_log}
+        for i in range(1, len(strat_nav)):
+            dt = strat_nav.index[i]
+            if dt in trade_dates_set:
+                for tdt, told, tnew in trade_log:
+                    if pd.Timestamp(tdt) == dt:
+                        if told is not None:
+                            strat_nav.iloc[i:] *= (1 - COMM - STAMP)
+                        if tnew is not None:
+                            strat_nav.iloc[i:] *= (1 - COMM)
+                        break
+    elif strat_nav is not None and holding_map is not None:
+        # MOO: use pre-computed data from manual engine
+        trade_log = trade_log or []
+    else:
+        # Fallback: run internal Backtrader
+        cerebro = _setup_cerebro(prices, mode, ma_days, roc_days, min_hold, strategy,
+                                 start_date=start_date, end_date=end_date,
+                                 open_prices=open_prices, exec_mode=exec_mode)
+        results = cerebro.run()
+        _strat = results[0]
+        value_map = {dt: v for dt, v in _strat._daily_value}
+        nav_raw = pd.Series(value_map, name='nav').sort_index()
+        holding_map = {dt: h for dt, h in _strat._daily_holding}
+        trade_log = _strat._trade_log
+        start_ts = pd.Timestamp(start_date)
+        end_ts = pd.Timestamp(end_date)
+        strat_nav = nav_raw[(nav_raw.index >= start_ts) & (nav_raw.index <= end_ts)]
+        if len(strat_nav) > 0:
+            strat_nav = strat_nav / strat_nav.iloc[0]
+        COMM = 0.0001; STAMP = 0.0005
+        trade_dates_set = {pd.Timestamp(t[0]) for t in trade_log}
+        for i in range(1, len(strat_nav)):
+            dt = strat_nav.index[i]
+            if dt in trade_dates_set:
+                for tdt, told, tnew in trade_log:
+                    if pd.Timestamp(tdt) == dt:
+                        if told is not None:
+                            strat_nav.iloc[i:] *= (1 - COMM - STAMP)
+                        if tnew is not None:
+                            strat_nav.iloc[i:] *= (1 - COMM)
+                        break
+
     COMMISSION_RATE = 0.0001 + 0.0005
 
     days = {n: 0 for n in etf_names}
     days["CASH"] = 0
     buys = {n: 0 for n in etf_names}
-    nav = {n: 1.0 for n in etf_names}
     pos_days = {n: 0 for n in etf_names}
     hold_days_for_wr = {n: 0 for n in etf_names}
     log_ret = {n: 0.0 for n in etf_names}
@@ -1291,12 +1349,10 @@ def position_dist_bt(prices, start_date, end_date, mode, ma_days=60, roc_days=25
 
     # Count buys from trade log
     trade_in_range = set()
-    for dt, from_etf, to_etf in strat._trade_log:
+    for dt, from_etf, to_etf in trade_log:
         if to_etf is not None and start_ts <= pd.Timestamp(dt) <= end_ts:
             buys[to_etf] += 1
             trade_in_range.add(str(pd.Timestamp(dt))[:10])
-
-    holding_map = {dt: h for dt, h in strat._daily_holding}
 
     # Fallback: count initial holding as a buy if inherited from pre-range
     in_range_dates = [d for d in prices.index if start_ts <= d <= end_ts]
@@ -1308,26 +1364,21 @@ def position_dist_bt(prices, start_date, end_date, mode, ma_days=60, roc_days=25
             if day_key not in trade_in_range:
                 buys[first_h] += 1
 
-    for i in range(len(prices)):
-        dt = prices.index[i]
-        in_range = dt >= pd.Timestamp(start_date) and dt <= pd.Timestamp(end_date)
-        if not in_range:
-            continue
+    strat_ret = strat_nav.pct_change().fillna(0.0)
 
-        h = holding_map.get(dt)
-        if h is None:
-            h = "CASH"
-        days[h] += 1
+    # Per-ETF cumulative return: attribute strategy daily return to held ETF
+    etf_nav = {n: 1.0 for n in etf_names}
+    for dt, r in strat_ret.items():
+        h = holding_map.get(dt) or "CASH"
         if h != "CASH":
-            r = daily_ret[h].iloc[i]
-            if not pd.isna(r):
-                nav[h] *= (1 + r)
-                hold_days_for_wr[h] += 1
-                if r > 0:
-                    pos_days[h] += 1
-                log_ret[h] += math.log(1 + r)
+            days[h] += 1
+            hold_days_for_wr[h] += 1
+            if r > 0:
+                pos_days[h] += 1
+            log_ret[h] += math.log(1 + r) if (1 + r) > 0 else 0
+            etf_nav[h] *= (1 + r)
 
-    for dt, from_etf, to_etf in strat._trade_log:
+    for dt, from_etf, to_etf in trade_log:
         if dt >= pd.Timestamp(start_date) and dt <= pd.Timestamp(end_date):
             if from_etf is not None and from_etf in log_ret:
                 log_ret[from_etf] += math.log(1 - COMMISSION_RATE)
@@ -1340,7 +1391,7 @@ def position_dist_bt(prices, start_date, end_date, mode, ma_days=60, roc_days=25
 
     cum_ret = {}
     for k in etf_names:
-        cum_ret[k] = nav[k] - 1.0 if days[k] > 0 else 0.0
+        cum_ret[k] = etf_nav[k] - 1.0 if days[k] > 0 else 0.0
     cum_ret["CASH"] = 0.0
 
     win_rate = {}
