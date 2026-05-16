@@ -11,6 +11,7 @@ from pathlib import Path
 
 import json
 import math
+import plotly.graph_objects as go
 
 import numpy as np
 import pandas as pd
@@ -771,13 +772,13 @@ if _mode == "网格交易":
     # 标的列表（可扩展）
     if "grid_symbols" not in st.session_state:
         _default_symbols = [
-            ("510050", "上证50"), ("510300", "沪深300"), ("510500", "中证500"),
-            ("588000", "科创50"), ("159915", "创业板"), ("159949", "创业板50"),
-            ("159740", "纳指ETF"), ("513100", "纳指"), ("159941", "纳指"),
-            ("513520", "日经ETF"), ("513500", "标普500"),
-            ("512890", "红利低波"), ("515080", "红利低波"),
-            ("518880", "黄金ETF"), ("159985", "豆粕ETF"),
-            ("511380", "可转债"), ("511260", "十年国债"),
+            ("159740", "恒科"), ("510050", "上证50"),
+            ("159915", "创业板"), ("518880", "黄金ETF"),
+            ("159941", "纳指"), ("513100", "纳指"),
+            ("513500", "标普500"), ("513520", "日经ETF"),
+            ("588000", "科创50"), ("510300", "沪深300"),
+            ("510500", "中证500"), ("512890", "红利低波"),
+            ("159985", "豆粕ETF"), ("511380", "可转债"),
         ]
         if GRID_SYMBOLS_PATH.exists():
             try:
@@ -798,6 +799,13 @@ if _mode == "网格交易":
                                         key="g_sym_sel",
                                         help="输入文字搜索，支持键盘上下选择")
     grid_symbol = grid_sym_sel.split("(")[0].strip()
+    if st.sidebar.button("📊 K线", use_container_width=True, key="g_kline_btn",
+                         help="查看该标的K线数据（不跑回测）"):
+        st.session_state["_kl_view"] = grid_symbol
+    if st.session_state.get("_kl_view") and st.session_state["_kl_view"] != grid_symbol:
+        st.session_state.pop("_kl_view", None)
+        st.session_state.pop("_kl_df", None)
+    _view_kline = st.session_state.get("_kl_view") == grid_symbol
 
     with st.sidebar.expander("📝 管理标的", expanded=False):
         _sym_json = json.dumps(dict(st.session_state.grid_symbols), ensure_ascii=False, indent=2)
@@ -912,11 +920,12 @@ if _mode == "网格交易":
     )
 
     _bp_val = round(_first_close, 3) if _first_close is not None else 0.0
+    _bp_key = f"g_bp_inp_{grid_symbol}"
     grid_base_price = st.sidebar.number_input("初始基准价", 0.0, 10000.0,
                                                _bp_val, step=0.001,
                                                format="%.3f",
                                                help=f"{'自动 = 首日收盘' if _first_close else '数据加载后自动计算'}",
-                                               key="g_bp_inp")
+                                               key=_bp_key)
 
     gc1, gc2 = st.sidebar.columns(2)
     with gc1:
@@ -924,13 +933,13 @@ if _mode == "网格交易":
         grid_price_low = st.number_input("价格下限", 0.0, 10000.0,
                                           _lo_val, step=0.001, format="%.3f",
                                           help=f"{'自动 = 首日收盘 × 20%' if _first_close else '数据加载后自动计算'}",
-                                          key="g_pl_inp")
+                                          key=f"g_pl_inp_{grid_symbol}")
     with gc2:
         _hi_val = round(_first_close * 2.0, 3) if _first_close is not None else 0.0
         grid_price_high = st.number_input("价格上限", 0.0, 10000.0,
                                            _hi_val, step=0.001, format="%.3f",
                                            help=f"{'自动 = 首日收盘 × 200%' if _first_close else '数据加载后自动计算'}",
-                                           key="g_ph_inp")
+                                           key=f"g_ph_inp_{grid_symbol}")
 
     gc3, gc4 = st.sidebar.columns(2)
     with gc3:
@@ -974,7 +983,7 @@ if _mode == "网格交易":
         st.sidebar.success("✅ 配置已保存")
 
     # 网格结果持久化（切换控件后不丢失）
-    _grid_sig = (grid_symbol, grid_period, grid_source, grid_trigger_type,
+    _grid_sig = ("v3", grid_symbol, grid_period, grid_source, grid_trigger_type,
                  sell_threshold, buy_threshold, pullback_sell, bounce_buy,
                  grid_amount, grid_trade_cap, grid_init_amount,
                  grid_base_price, grid_price_low, grid_price_high,
@@ -983,30 +992,101 @@ if _mode == "网格交易":
         st.session_state.pop("_grid_cached", None)
         st.session_state.pop("_opt_done", None)
         st.session_state.pop("_opt_rows", None)
+        st.session_state.pop("grid_mtf", None)
+        st.session_state.pop("_kl_df", None)
     st.session_state["_grid_sig"] = _grid_sig
     run_grid = run_grid_btn or ("_grid_cached" in st.session_state)
+
+    # ── K线查看器 ────────────────────────────────────────
+    if _view_kline:
+        _close_col, _title_col = st.columns([1, 20])
+        with _close_col:
+            if st.button("✕", key="g_kl_close"):
+                st.session_state.pop("_kl_view", None)
+                st.rerun()
+        with _title_col:
+            st.subheader(f"📊 {grid_sym_sel} K线")
+        _kl_period = st.radio("周期", ["daily", "5", "15", "30", "60"],
+                              format_func=lambda x: "日线" if x == "daily" else f"{x}分钟",
+                              horizontal=True, key="g_kl_period")
+        _kl_sources = {"daily": ["akshare", "em", "tsanghi"],
+                       "5": ["sina", "em", "tsanghi"],
+                       "15": ["sina", "em", "tsanghi"],
+                       "30": ["sina", "em", "tsanghi"],
+                       "60": ["sina", "em", "tsanghi"]}
+        _kl_opts = _kl_sources.get(_kl_period, ["sina"])
+        _kl_src_key = f"g_kl_src_{_kl_period}"
+        _kl_src = st.radio("数据源", _kl_opts,
+                           format_func=lambda x: {"akshare": "AKShare", "em": "东方财富", "sina": "新浪", "tsanghi": "沧海"}[x],
+                           horizontal=True, key=_kl_src_key)
+        _kl_start, _kl_end = st.columns(2)
+        with _kl_start:
+            _kl_sd = st.date_input("开始", pd.Timestamp("2026-01-01"), key="g_kl_sd")
+        with _kl_end:
+            _kl_ed = st.date_input("结束", pd.Timestamp.today(), key="g_kl_ed")
+        _kl_fetch = st.button("🔍 查询", type="primary", key="g_kl_fetch")
+        if _kl_fetch:
+            with st.spinner(f"加载 {grid_symbol} {_kl_period} 数据..."):
+                try:
+                    _kl_df = load_grid_data(grid_symbol, period=_kl_period, source=_kl_src,
+                                            start_date=str(_kl_sd), end_date=str(_kl_ed))
+                except Exception as e:
+                    _kl_df = pd.DataFrame()
+                    st.error(f"❌ 拉取失败: {e}")
+            if len(_kl_df) == 0:
+                st.warning("⚠️ 未获取到数据")
+            else:
+                st.success(f"✅ 获取到 {len(_kl_df)} 根K线, {_kl_df.index[0].strftime('%Y-%m-%d')} ~ {_kl_df.index[-1].strftime('%Y-%m-%d')}")
+                st.caption(f"最新: O={_kl_df['open'].iloc[-1]:.3f} H={_kl_df['high'].iloc[-1]:.3f} L={_kl_df['low'].iloc[-1]:.3f} C={_kl_df['close'].iloc[-1]:.3f}")
+                st.session_state["_kl_df"] = _kl_df
+        if st.session_state.get("_kl_df") is not None and len(st.session_state["_kl_df"]) > 0:
+            _kl_df = st.session_state["_kl_df"]
+            _kl_chart = go.Figure()
+            _kl_chart.add_trace(go.Candlestick(
+                x=_kl_df.index,
+                open=_kl_df['open'], high=_kl_df['high'],
+                low=_kl_df['low'], close=_kl_df['close'],
+                name=grid_symbol,
+                increasing_line_color='#E53935', decreasing_line_color='#43A047',
+            ))
+            if _kl_period != "daily":
+                _end = _kl_df.index[-1]
+                _start = _end - pd.Timedelta(days=5)
+                _kl_chart.update_xaxes(
+                    tickformat='%m-%d %H:%M',
+                    range=[_start, _end],
+                    rangebreaks=[
+                        dict(bounds=["sat", "mon"]),         # 周末
+                        dict(bounds=[11.5, 13], pattern="hour"),  # 午休 11:30-13:00
+                        dict(bounds=[15, 9.5], pattern="hour"),  # 收盘~次日上午
+                    ])
+            _kl_chart.update_layout(height=500, template='plotly_white',
+                                    hovermode='x unified',
+                                    xaxis_rangeslider_visible=True)
+            st.plotly_chart(_kl_chart, width='stretch')
+        st.divider()
 
     # ═══════════════════════════════════════════════════════
     # 网格交易主界面
     # ═══════════════════════════════════════════════════════
     if run_grid:
         import plotly.graph_objects as go
-        st.session_state["_grid_cached"] = True
         with st.spinner(f"加载 {grid_symbol} 数据..."):
-            df = load_grid_data(grid_symbol, period=grid_period,
-                                start_date=str(grid_start), end_date=str(grid_end),
-                                source=grid_source)
-            # MTF：日线回测时尝试加载分钟线用于精确成交
+            df = load_grid_data(grid_symbol, period=grid_period, source=grid_source,
+                                start_date=str(grid_start), end_date=str(grid_end))
             df_minute = None
-            if grid_period == "daily":
+            _exec_level = {"daily": "日线", "5": "5分钟", "15": "15分钟", "30": "30分钟", "60": "60分钟"}.get(grid_period, f"{grid_period}")
+            if grid_period == "daily" and "grid_mtf" not in st.session_state:
                 try:
-                    df_minute = load_grid_data(grid_symbol, period="5",
-                                               start_date=str(grid_start), end_date=str(grid_end),
-                                               source=grid_source)
-                    if len(df_minute) == 0:
-                        df_minute = None
+                    _mtf_src = "sina" if grid_source not in ("sina", "em", "tsanghi") else grid_source
+                    _pre_mtf = load_grid_data(grid_symbol, period="5", source=_mtf_src,
+                                              start_date=str(grid_start), end_date=str(grid_end))
+                    st.session_state["grid_mtf"] = None if len(_pre_mtf) == 0 else _pre_mtf
                 except Exception:
-                    df_minute = None
+                    st.session_state["grid_mtf"] = None
+            if st.session_state.get("grid_mtf") is not None:
+                df_minute = st.session_state["grid_mtf"]
+                _exec_level = "日线+5分钟"
 
         if len(df) == 0:
             st.error("❌ 未获取到数据，请检查标的代码或网络")
@@ -1036,10 +1116,11 @@ if _mode == "网格交易":
                     commission=comm, stamp_duty=stamp, slippage=slip,
                     df_minute=df_minute,
                 )
+            st.session_state["_grid_cached"] = True
 
             from etf_grid import _is_t0
             is_t0 = _is_t0(grid_symbol)
-            st.subheader(f"网格回测: {grid_symbol}  |  {_eff_start} ~ {_eff_end}  |  {'T+0' if is_t0 else 'T+1'}")
+            st.subheader(f"网格回测: {grid_symbol}  |  {_eff_start} ~ {_eff_end}  |  {'T+0' if is_t0 else 'T+1'}  |  {_exec_level}")
 
             # 指标卡片
             total_cap = grid_init_amount + grid_amount * grid_max_pos
@@ -1063,7 +1144,21 @@ if _mode == "网格交易":
             # 交易明细
             st.divider()
             st.markdown("### 📋 交易明细")
-            if trades:
+            with st.expander("🔍 Debug: 引擎参数", expanded=False):
+                st.code(
+                    f"symbol={grid_symbol}\n"
+                    f"df={len(df)} rows ({_eff_start}~{_eff_end})\n"
+                    f"df_minute={'None' if df_minute is None else f'{len(df_minute)} rows'}\n"
+                    f"base_price={grid_base_price} low={grid_price_low} high={grid_price_high}\n"
+                    f"buy={buy_threshold}% sell={sell_threshold}%\n"
+                    f"amount={grid_amount} max_pos={grid_max_pos} init_shares={grid_init_amount}\n"
+                    f"commission={comm} stamp={stamp} slip={slip}\n"
+                    f"engine trades={len(trades)}\n"
+                    f"Is T0={_is_t0(grid_symbol)}"
+                )
+            if not trades:
+                st.warning("⚠️ 回测没有产生任何交易。可能原因：价格未触及网格线、数据不足、或参数设置不当")
+            else:
                 trade_rows = []
                 for t in trades:
                     trade_rows.append({
@@ -1102,13 +1197,14 @@ if _mode == "网格交易":
             st.divider()
             st.markdown("### 📊 价格走势 + 网格线")
             if len(df) > 0:
-                _label = lambda p: "日线" if p == "daily" else f"{p}分钟"
-                chart_opts = {grid_period: _label(grid_period)}
-                if grid_period != "daily":
-                    chart_opts["daily"] = "日线"
+                # 图表周期选项：有分钟线数据时支持切换，否则只显示日线
+                _has_minute = df_minute is not None
+                chart_opts = {"daily": "日线"}
+                if _has_minute:
                     for p in ["5", "15", "30", "60"]:
-                        if p != grid_period:
-                            chart_opts[p] = _label(p)
+                        chart_opts[p] = f"{p}分钟"
+                if grid_period != "daily" and grid_period not in chart_opts:
+                    chart_opts[grid_period] = f"{grid_period}分钟"
                 chart_period = st.radio("K线周期", list(chart_opts.keys()),
                                         format_func=lambda x: chart_opts[x],
                                         horizontal=True, key="g_chart_k")
@@ -1118,17 +1214,17 @@ if _mode == "网格交易":
                             'open': 'first', 'high': 'max',
                             'low': 'min', 'close': 'last'
                         })
-                    elif chart_period == grid_period:
-                        chart_df = df
-                    else:
+                    elif _has_minute and chart_period in ("5", "15", "30", "60"):
                         minutes = int(chart_period)
-                        chart_df = df.resample(f'{minutes}min').agg({
+                        chart_df = df_minute.resample(f'{minutes}min').agg({
                             'open': 'first', 'high': 'max',
                             'low': 'min', 'close': 'last'
                         })
+                    else:
+                        chart_df = df
                     chart_df = chart_df.dropna(how='all')
                 except Exception:
-                    chart_df = df
+                    chart_df = df_minute if _has_minute else df
 
                 fig2 = go.Figure()
                 fig2.add_trace(go.Candlestick(
@@ -1141,10 +1237,11 @@ if _mode == "网格交易":
                 if trades:
                     buy_x, buy_y, sell_x, sell_y = [], [], [], []
                     for t in trades:
+                        ts = t.datetime.normalize() if chart_period == "daily" else t.datetime
                         if t.side == "buy":
-                            buy_x.append(t.datetime); buy_y.append(t.price)
+                            buy_x.append(ts); buy_y.append(t.price)
                         else:
-                            sell_x.append(t.datetime); sell_y.append(t.price)
+                            sell_x.append(ts); sell_y.append(t.price)
                     fig2.add_trace(go.Scatter(x=buy_x, y=buy_y, mode='markers',
                         marker=dict(symbol='circle', size=9, color='#D32F2F',
                                     line=dict(color='white', width=1.5)),
@@ -1154,16 +1251,22 @@ if _mode == "网格交易":
                                     line=dict(color='white', width=1.5)),
                         name='卖出', hovertemplate='卖出 %{y:.3f}<extra></extra>'))
 
+                if chart_period != "daily":
+                    fig2.update_xaxes(
+                        tickformat='%m-%d %H:%M',
+                        rangebreaks=[
+                            dict(bounds=["sat", "mon"]),
+                            dict(bounds=[11.5, 13], pattern="hour"),
+                            dict(bounds=[15, 9.5], pattern="hour"),
+                        ])
+                else:
+                    fig2.update_xaxes(tickformat='%m-%d')
                 fig2.update_layout(
                     height=500, template='plotly_white',
                     title=f'{grid_symbol} {chart_opts[chart_period]}',
-                    xaxis_rangeslider_visible=False,
                     hovermode='x unified',
+                    xaxis_rangeslider_visible=(chart_period != "daily"),
                 )
-                if chart_period != "daily":
-                    fig2.update_xaxes(tickformat='%m-%d %H:%M')
-                else:
-                    fig2.update_xaxes(tickformat='%m-%d')
                 fig2.update_yaxes(showgrid=True, gridcolor='#f0f0f0')
                 st.plotly_chart(fig2, width='stretch')
 
@@ -1249,21 +1352,7 @@ if _mode == "网格交易":
                     df_opt["反弹%"] = df_opt["反弹%"].map("{:.1f}".format)
                     st.dataframe(df_opt.head(top_n), hide_index=True, width='stretch')
 
-            with st.expander("📋 回测参数（排查问题用）", expanded=False):
-                _params = {
-                    "标的": grid_symbol, "K线粒度": grid_period, "数据源": grid_source,
-                    "涨跌类型": grid_trigger_type,
-                    "上涨卖出%": sell_threshold, "回落卖出%": pullback_sell,
-                    "下跌买入%": buy_threshold, "反弹买入%": bounce_buy,
-                    "每次做T金额": grid_amount, "做T资金": grid_trade_cap,
-                    "做T笔数": grid_max_pos, "初始底仓金额": grid_init_amount,
-                    "初始基准价": grid_base_price,
-                    "价格下限": grid_price_low, "价格上限": grid_price_high,
-                    "开始日期": str(grid_start), "结束日期": str(grid_end),
-                    "佣金率": comm, "滑点": slip,
-                    "数据行数": len(df), "数据范围": f"{_eff_start} ~ {_eff_end}",
-                }
-                st.code("\n".join(f"{k}: {v}" for k, v in _params.items()), language="text")
+
 
     st.stop()  # 网格模式下不执行动量逻辑
 

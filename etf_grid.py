@@ -60,6 +60,7 @@ class ThsGridEngine:
         self.base_price: float = 0.0
         self.trades: list[Trade] = []
         self._is_t0 = _is_t0(cfg.symbol)
+        self._init_grid_positions: int = 0  # 初始底仓占用的网格槽位数，不计入买入容量限制
 
     def _trigger_prices(self):
         if self.cfg.trigger_type == "percent":
@@ -81,7 +82,7 @@ class ThsGridEngine:
         return max(1, int(self.cfg.amount_per_grid / price))
 
     def _can_buy(self):
-        return self.position_count < self.cfg.max_positions
+        return (self.position_count - self._init_grid_positions) < self.cfg.max_positions
 
     @staticmethod
     def _infer_candle_path(o: float, h: float, l: float, c: float) -> list[float]:
@@ -165,6 +166,8 @@ class ThsGridEngine:
                 px = path[i]
                 acted = False
 
+                init_gp = self._init_grid_positions
+
                 # 检查卖出（含回落）
                 if px >= sell_px and _can_sell():
                     if pull > 0:
@@ -191,7 +194,7 @@ class ThsGridEngine:
                         acted = True
 
                 # 检查买入（含反弹）
-                elif px <= buy_px and _pos_cnt < self.cfg.max_positions:
+                elif px <= buy_px and (_pos_cnt - init_gp) < self.cfg.max_positions:
                     if bounce > 0:
                         valley = px
                         for j in range(i + 1, len(path)):
@@ -260,8 +263,8 @@ class ThsGridEngine:
                     if found:
                         break
                 if not found:
-                    # 分钟线中没有找到触发点，用当日最后一根 K 线的收盘价执行
                     if len(day_bars) > 0:
+                        # 用当日最后一根 K 线的收盘价执行
                         last = day_bars.iloc[-1]
                         last_c = float(last["close"])
                         if sig.side == "sell":
@@ -270,6 +273,12 @@ class ThsGridEngine:
                         else:
                             exec_px = max(sig.price, last_c)
                             self._execute_buy(exec_px, sig.exec_time)
+                    else:
+                        # 当日没有分钟线数据，回退到日线执行
+                        if sig.side == "sell":
+                            self._execute_sell(exec_price, sig.exec_time)
+                        else:
+                            self._execute_buy(exec_price, sig.exec_time)
             else:
                 # 单时间框架：直接用信号时间执行
                 if sig.side == "sell":
@@ -296,7 +305,8 @@ class ThsGridEngine:
         self._init_pos = init_shares
         self.cash = trading_cap
         self.position = init_shares
-        self.position_count = min(init_pos, self.cfg.max_positions)
+        self._init_grid_positions = min(init_pos, self.cfg.max_positions)
+        self.position_count = self._init_grid_positions
         self.today_bought = 0
         self.trades = []
 
@@ -309,7 +319,8 @@ class ThsGridEngine:
         self._init_pos = init_shares
         self.cash = trading_cap
         self.position = init_shares
-        self.position_count = min(init_pos, self.cfg.max_positions)
+        self._init_grid_positions = min(init_pos, self.cfg.max_positions)
+        self.position_count = self._init_grid_positions
         self.today_bought = 0
         self.trades = []
 
