@@ -23,7 +23,7 @@ from etf_data import (DEFAULT_CONFIG, calc_indicators, load_config, load_prices,
                         load_open_prices, load_midday_prices, load_afternoon_open_prices,
                         midday_data_available)
 from etf_backtrader import run_backtest_bt, position_dist_bt, STRATEGIES
-from etf_grid import run_grid_backtest, GridConfig
+from etf_grid import run_grid_backtest, ThsGridConfig
 from etf_grid_data import load_grid_data
 import datetime as _dt
 import json
@@ -32,6 +32,7 @@ st.set_page_config(page_title="ETF双动量轮动", layout="wide")
 
 # 网格参数持久化（本地 JSON + URL）
 GRID_CONFIG_PATH = Path(__file__).parent / "etf_grid_config.json"
+GRID_SYMBOLS_PATH = Path(__file__).parent / "etf_grid_symbols.json"
 MOMENTUM_CONFIG_PATH = Path(__file__).parent / "etf_momentum_config.json"
 
 st.markdown("""
@@ -73,6 +74,18 @@ def cached_open_prices(etfs: dict, group_name: str, source: str = "akshare") -> 
     return load_open_prices(etfs, group_name, source=source)
 
 
+@st.cache_data(ttl=3600)
+def _first_close_for_grid(symbol: str, period: str, source: str,
+                          start_date: str, end_date: str) -> float | None:
+    try:
+        df = load_grid_data(symbol, period=period,
+                            start_date=start_date, end_date=end_date,
+                            source=source)
+        if len(df) > 0:
+            return float(df["close"].iloc[0])
+    except Exception:
+        pass
+    return None
 
 
 def _safe_loc(df, col, dt, fallback_prices, i):
@@ -757,7 +770,7 @@ if _mode == "网格交易":
 
     # 标的列表（可扩展）
     if "grid_symbols" not in st.session_state:
-        st.session_state.grid_symbols = [
+        _default_symbols = [
             ("510050", "上证50"), ("510300", "沪深300"), ("510500", "中证500"),
             ("588000", "科创50"), ("159915", "创业板"), ("159949", "创业板50"),
             ("159740", "纳指ETF"), ("513100", "纳指"), ("159941", "纳指"),
@@ -766,6 +779,14 @@ if _mode == "网格交易":
             ("518880", "黄金ETF"), ("159985", "豆粕ETF"),
             ("511380", "可转债"), ("511260", "十年国债"),
         ]
+        if GRID_SYMBOLS_PATH.exists():
+            try:
+                _saved = json.loads(GRID_SYMBOLS_PATH.read_text())
+                st.session_state.grid_symbols = [(k, v) for k, v in _saved.items()]
+            except Exception:
+                st.session_state.grid_symbols = _default_symbols
+        else:
+            st.session_state.grid_symbols = _default_symbols
     # 从 session_state 恢复自定义标的
     grid_sym_list = [f"{sym} ({name})" for sym, name in st.session_state.grid_symbols]
     default_sym_idx = 0
@@ -779,98 +800,101 @@ if _mode == "网格交易":
     grid_symbol = grid_sym_sel.split("(")[0].strip()
 
     with st.sidebar.expander("📝 管理标的", expanded=False):
-        # 添加
-        st.markdown("**添加**")
-        ac1, ac2 = st.columns(2)
-        new_code = ac1.text_input("代码", "", key="g_new_code", max_chars=10, label_visibility="collapsed")
-        new_name = ac2.text_input("名称", "", key="g_new_name", max_chars=20, label_visibility="collapsed")
-        if st.button("➕ 添加", key="g_add_btn", use_container_width=True):
-            cs, ns = new_code.strip(), new_name.strip()
-            if cs and ns:
-                if any(s == cs for s, _ in st.session_state.grid_symbols):
-                    st.warning("该代码已存在")
-                else:
-                    st.session_state.grid_symbols.append((cs, ns))
-                    st.rerun()
-        # 编辑/删除：下拉选择要操作的标的
-        st.markdown("**编辑/删除**")
-        edit_sel = st.selectbox("选择标的", grid_sym_list, key="g_edit_sel",
-                                label_visibility="collapsed")
-        ec1, ec2, ec3 = st.columns([2, 1, 1])
-        edit_new_name = ec1.text_input("新名称", value=edit_sel.split("(")[1].rstrip(")") if "(" in edit_sel else "",
-                                       key="g_edit_name", label_visibility="collapsed")
-        if ec2.button("✏️ 改名", key="g_rename_btn", use_container_width=True):
-            ec = edit_sel.split("(")[0].strip()
-            for i, (code, _) in enumerate(st.session_state.grid_symbols):
-                if code == ec:
-                    st.session_state.grid_symbols[i] = (code, edit_new_name.strip())
-                    st.rerun()
-        if ec3.button("🗑️ 删除", key="g_del_btn", use_container_width=True):
-            ec = edit_sel.split("(")[0].strip()
-            for i, (code, _) in enumerate(st.session_state.grid_symbols):
-                if code == ec:
-                    st.session_state.grid_symbols.pop(i)
-                    st.rerun()
+        _sym_json = json.dumps(dict(st.session_state.grid_symbols), ensure_ascii=False, indent=2)
+        _new_json = st.text_area("{\"代码\": \"名称\"}", _sym_json,
+                                 height=200, key="g_sym_json")
+        if st.button("💾 保存到列表", use_container_width=True):
+            try:
+                _parsed = json.loads(_new_json)
+                st.session_state.grid_symbols = [(k, v) for k, v in _parsed.items()]
+                GRID_SYMBOLS_PATH.write_text(_new_json, encoding="utf-8")
+                st.session_state.pop("g_sym_json", None)
+                st.session_state["_grid_msg"] = f"✅ 已保存 {len(st.session_state.grid_symbols)} 个标的"
+            except json.JSONDecodeError as e:
+                st.session_state["_grid_msg"] = f"❌ JSON 格式错误: {e}"
+            except Exception as e:
+                st.session_state["_grid_msg"] = f"❌ 保存失败: {e}"
+            st.rerun()
+        _grid_msg = st.session_state.pop("_grid_msg", None)
+        if _grid_msg:
+            if _grid_msg.startswith("✅"):
+                st.success(_grid_msg)
+            else:
+                st.error(_grid_msg)
 
     grid_period = st.sidebar.selectbox("K线粒度", ["daily", "1", "5", "15", "30", "60"],
                                        index=["daily","1","5","15","30","60"].index(_grid_def("g_period", "daily")),
                                        format_func=lambda x: f"{x} 分钟" if x != "daily" else "日线",
                                        key="g_period_sel")
-    # 数据源：分钟线只有 EM，日线有 akshare(Sina) 和 EM
+    # 数据源：日线有 akshare(Sina)、EM、沧海(Tsanghi)
+    _daily_sources = ["akshare", "em", "tsanghi"]
     if grid_period == "daily":
-        grid_source = st.sidebar.selectbox("数据源", ["akshare", "em"],
-                                           index=["akshare","em"].index(_grid_def("g_src", "akshare")),
+        _day_src = _grid_def("g_src", "akshare")
+        _day_idx = _daily_sources.index(_day_src) if _day_src in _daily_sources else 0
+        grid_source = st.sidebar.selectbox("数据源", _daily_sources,
+                                           index=_day_idx,
                                            format_func=lambda x: {"akshare": "AKShare (Sina)",
-                                                                  "em": "东方财富 (EM)"}[x],
+                                                                  "em": "东方财富 (EM)",
+                                                                  "tsanghi": "沧海 (Tsanghi)"}[x],
                                            key="g_src_sel")
     else:
-        grid_source = "em"
-        st.sidebar.caption("分钟线仅支持东方财富 (EM) 数据源")
-    grid_type = st.sidebar.selectbox("网格类型", ["arithmetic", "geometric", "volatility"],
-                                     index={"arithmetic": 0, "geometric": 1, "volatility": 2}.get(
-                                         _grid_def("g_type", "arithmetic"), 0),
-                                     format_func=lambda x: {"arithmetic": "等差网格",
-                                                            "geometric": "等比网格",
-                                                            "volatility": "ATR 动态网格"}[x],
-                                     key="g_type_sel")
-    grid_use_step = st.sidebar.checkbox("按步长设置", value=_grid_def("g_step", "0") != "0",
-                                         help="勾选后按价差/百分比自动计算网格线数，更灵活")
-    if grid_use_step:
-        step_label = "每格价差" if grid_type == "arithmetic" else "每格百分比(%)"
-        step_fmt = "%.4f" if grid_type == "arithmetic" else "%.2f"
-        step_default = 0.05 if grid_type == "arithmetic" else 1.0
-        step_saved = float(_grid_def("g_step", str(step_default)))
-        if step_saved < 0.001:
-            step_saved = step_default
-        grid_step = st.sidebar.number_input(step_label, 0.001, 100.0,
-                                             step_saved,
-                                             step=0.01, format=step_fmt, key="g_step_inp")
-        grid_n = 0
+        _min_sources = ["sina", "em", "tsanghi"]
+        _min_src = _grid_def("g_src", "sina")
+        _min_src_idx = _min_sources.index(_min_src) if _min_src in _min_sources else 0
+        grid_source = st.sidebar.selectbox("数据源", _min_sources,
+                                           index=_min_src_idx,
+                                           format_func=lambda x: {"sina": "新浪 (稳定, ~1970根)",
+                                                                  "em": "东方财富 (不稳定)",
+                                                                  "tsanghi": "沧海 (Tsanghi)"}[x],
+                                           key="g_src_min_sel")
+
+    grid_trigger_type = st.sidebar.selectbox("涨跌类型", ["percent", "price"],
+                                              index=["percent", "price"].index(_grid_def("g_tt", "percent")),
+                                              format_func=lambda x: {"percent": "按比例(%)",
+                                                                     "price": "按价格"}[x],
+                                              key="g_tt_sel")
+    if grid_trigger_type == "percent":
+        tr_fmt = "%.2f"
+        tr_step = 0.1
+        tr_default = 1.0
+        tr_help = "百分比，如 1.0 = 1%"
     else:
-        grid_step = 0.0
-        grid_n = st.sidebar.slider("网格线数", 4, 50, int(_grid_def("g_n", "10")),
-                                   help="价格区间内划分网格数量", key="g_n_slider")
-    grid_amount = st.sidebar.number_input("每格金额", 1000, 100000,
+        tr_fmt = "%.3f"
+        tr_step = 0.001
+        tr_default = 0.05
+        tr_help = "价差金额"
+    sell_threshold = st.sidebar.number_input("上涨多少卖出", 0.001, 100.0,
+                                              float(_grid_def("g_sell", str(tr_default))),
+                                              step=tr_step, format=tr_fmt,
+                                              help=tr_help, key="g_sell_inp")
+    pullback_sell = st.sidebar.number_input("回落多少卖出（0=不启用）", 0.0, 50.0,
+                                             float(_grid_def("g_ps", "0")),
+                                             step=0.1, format="%.1f",
+                                             help="触发上涨后，从最高点回落此百分比时卖出。如 0.3 = 回落 0.3%",
+                                             key="g_ps_inp")
+    buy_threshold = st.sidebar.number_input("下跌多少买入", 0.001, 100.0,
+                                             float(_grid_def("g_buy", str(tr_default))),
+                                             step=tr_step, format=tr_fmt,
+                                             help=tr_help, key="g_buy_inp")
+    bounce_buy = st.sidebar.number_input("反弹多少买入（0=不启用）", 0.0, 50.0,
+                                          float(_grid_def("g_bb", "0")),
+                                          step=0.1, format="%.1f",
+                                          help="触发下跌后，从最低点反弹此百分比时买入。如 0.3 = 反弹 0.3%",
+                                          key="g_bb_inp")
+
+    grid_amount = st.sidebar.number_input("每次做T金额", 1000, 100000,
                                           int(_grid_def("g_amt", "10000")), step=1000,
-                                          help="每条网格线触发时买入/卖出的金额",
+                                          help="每次触发时买入/卖出的金额",
                                           key="g_amt_inp")
-    grid_max_pos = st.sidebar.slider("最大持仓格数", 1, 30,
-                                     int(_grid_def("g_maxp", "10")),
-                                     help="最多同时持有几个网格的仓位",
-                                     key="g_maxp_slider")
-    grid_init_shares = st.sidebar.number_input("初始底仓(股)", 0, 1000000,
-                                                int(_grid_def("g_init", "0")), step=1000,
-                                                help="回测开始时已持有的持仓数量",
+    grid_trade_cap = st.sidebar.number_input("做T资金", 0, 10000000,
+                                              int(_grid_def("g_tcap", "100000")), step=10000,
+                                              help="专门用于网格交易的总资金，做T笔数 = 做T资金 ÷ 每次做T金额",
+                                              key="g_tcap_inp")
+    grid_max_pos = max(1, int(grid_trade_cap / grid_amount)) if grid_trade_cap > 0 else 10
+    grid_init_amount = st.sidebar.number_input("初始底仓金额", 0, 10000000,
+                                                int(_grid_def("g_init", "0")), step=10000,
+                                                help="回测开始时已持有的持仓金额（按基准价折算股数）",
                                                 key="g_init_inp")
-    grid_capital = st.sidebar.number_input("总本金", 0, 10000000,
-                                            int(_grid_def("g_cap", "0")), step=10000,
-                                            help="总资金。0=自动按每格金额×最大持仓格数计算",
-                                            key="g_cap_inp")
-    grid_base_price = st.sidebar.number_input("基准价", 0.0, 10000.0,
-                                               float(_grid_def("g_bp", "0")), step=0.01,
-                                               format="%.2f",
-                                               help="网格中心价格。设为0则用回测首日收盘价，也可手动指定",
-                                               key="g_bp_inp")
 
     sb_date_col1_g, sb_date_col2_g = st.sidebar.columns(2)
     with sb_date_col1_g:
@@ -882,22 +906,54 @@ if _mode == "网格交易":
                                   key="gs_end", format="YYYY-MM-DD",
                                   max_value=pd.Timestamp.today())
 
-    comm = st.sidebar.number_input("佣金率", 0.0, 0.01, float(_grid_def("g_comm", "0.0003")),
-                                   step=0.0001, format="%.4f",
-                                   help="ETF 万1~万3（0.0001~0.0003），A股印花税万5只收卖出",
-                                   key="g_comm_inp")
+    _first_close = _first_close_for_grid(
+        grid_symbol, grid_period, grid_source,
+        str(grid_start), (pd.Timestamp(grid_start) + pd.Timedelta(days=30)).strftime("%Y-%m-%d"),
+    )
+
+    _bp_val = round(_first_close, 3) if _first_close is not None else 0.0
+    grid_base_price = st.sidebar.number_input("初始基准价", 0.0, 10000.0,
+                                               _bp_val, step=0.001,
+                                               format="%.3f",
+                                               help=f"{'自动 = 首日收盘' if _first_close else '数据加载后自动计算'}",
+                                               key="g_bp_inp")
+
+    gc1, gc2 = st.sidebar.columns(2)
+    with gc1:
+        _lo_val = round(_first_close * 0.2, 3) if _first_close is not None else 0.0
+        grid_price_low = st.number_input("价格下限", 0.0, 10000.0,
+                                          _lo_val, step=0.001, format="%.3f",
+                                          help=f"{'自动 = 首日收盘 × 20%' if _first_close else '数据加载后自动计算'}",
+                                          key="g_pl_inp")
+    with gc2:
+        _hi_val = round(_first_close * 2.0, 3) if _first_close is not None else 0.0
+        grid_price_high = st.number_input("价格上限", 0.0, 10000.0,
+                                           _hi_val, step=0.001, format="%.3f",
+                                           help=f"{'自动 = 首日收盘 × 200%' if _first_close else '数据加载后自动计算'}",
+                                           key="g_ph_inp")
+
+    gc3, gc4 = st.sidebar.columns(2)
+    with gc3:
+        comm = st.number_input("佣金率", 0.0, 0.01, float(_grid_def("g_comm", "0.0003")),
+                               step=0.0001, format="%.4f",
+                               help="ETF 万1~万3（0.0001~0.0003）",
+                               key="g_comm_inp")
+    with gc4:
+        stamp = st.number_input("印花税率", 0.0, 0.01, float(_grid_def("g_stamp", "0.0")),
+                                 step=0.0001, format="%.4f",
+                                 help="卖出时收取，A股万5（0.0005），ETF不收",
+                                 key="g_stamp_inp")
     slip = st.sidebar.number_input("滑点", 0.0, 0.01, float(_grid_def("g_slip", "0.001")),
                                    step=0.0005, format="%.4f",
-                                   help="成交价与网格线之间的偏差。流动性好的ETF设0.001（0.1%）",
+                                   help="成交偏差。流动性好的ETF设0.001（0.1%）",
                                    key="g_slip_inp")
 
-    # 持久化到 URL query params
     st.query_params.update({
         "g_sym": grid_sym_sel, "g_period": grid_period, "g_src": grid_source,
-        "g_type": grid_type, "g_step": str(grid_step), "g_n": str(grid_n),
-        "g_amt": str(grid_amount), "g_maxp": str(grid_max_pos),
-        "g_init": str(grid_init_shares), "g_cap": str(grid_capital),
-        "g_bp": str(grid_base_price),
+        "g_tt": grid_trigger_type, "g_sell": str(sell_threshold), "g_ps": str(pullback_sell),
+        "g_buy": str(buy_threshold), "g_bb": str(bounce_buy),
+        "g_amt": str(grid_amount), "g_tcap": str(grid_trade_cap),
+        "g_init": str(grid_init_amount),
         "g_sd": str(grid_start), "g_ed": str(grid_end),
         "g_comm": str(comm), "g_slip": str(slip),
     })
@@ -907,59 +963,102 @@ if _mode == "网格交易":
                          help="保存当前参数到 etf_grid_config.json，远程部署时也适用"):
         config_data = {
             "g_sym": grid_sym_sel, "g_period": grid_period, "g_src": grid_source,
-            "g_type": grid_type, "g_step": str(grid_step), "g_n": str(grid_n),
-            "g_amt": str(grid_amount), "g_maxp": str(grid_max_pos),
-            "g_init": str(grid_init_shares), "g_cap": str(grid_capital),
-            "g_pauto": "1" if grid_price_auto else "0",
-            "g_pl": str(grid_pl), "g_ph": str(grid_ph),
+            "g_tt": grid_trigger_type, "g_sell": str(sell_threshold), "g_ps": str(pullback_sell),
+            "g_buy": str(buy_threshold), "g_bb": str(bounce_buy),
+            "g_amt": str(grid_amount), "g_tcap": str(grid_trade_cap),
+            "g_init": str(grid_init_amount),
             "g_sd": str(grid_start), "g_ed": str(grid_end),
             "g_comm": str(comm), "g_slip": str(slip),
         }
         GRID_CONFIG_PATH.write_text(json.dumps(config_data, ensure_ascii=False, indent=2))
         st.sidebar.success("✅ 配置已保存")
 
+    # 网格结果持久化（切换控件后不丢失）
+    _grid_sig = (grid_symbol, grid_period, grid_source, grid_trigger_type,
+                 sell_threshold, buy_threshold, pullback_sell, bounce_buy,
+                 grid_amount, grid_trade_cap, grid_init_amount,
+                 grid_base_price, grid_price_low, grid_price_high,
+                 str(grid_start), str(grid_end), comm, slip)
+    if st.session_state.get("_grid_sig") != _grid_sig:
+        st.session_state.pop("_grid_cached", None)
+        st.session_state.pop("_opt_done", None)
+        st.session_state.pop("_opt_rows", None)
+    st.session_state["_grid_sig"] = _grid_sig
+    run_grid = run_grid_btn or ("_grid_cached" in st.session_state)
+
     # ═══════════════════════════════════════════════════════
     # 网格交易主界面
     # ═══════════════════════════════════════════════════════
-    if run_grid_btn:
+    if run_grid:
         import plotly.graph_objects as go
-        with st.spinner(f"加载 {grid_symbol} 分钟数据..."):
+        st.session_state["_grid_cached"] = True
+        with st.spinner(f"加载 {grid_symbol} 数据..."):
             df = load_grid_data(grid_symbol, period=grid_period,
                                 start_date=str(grid_start), end_date=str(grid_end),
                                 source=grid_source)
+            # MTF：日线回测时尝试加载分钟线用于精确成交
+            df_minute = None
+            if grid_period == "daily":
+                try:
+                    df_minute = load_grid_data(grid_symbol, period="5",
+                                               start_date=str(grid_start), end_date=str(grid_end),
+                                               source=grid_source)
+                    if len(df_minute) == 0:
+                        df_minute = None
+                except Exception:
+                    df_minute = None
 
         if len(df) == 0:
             st.error("❌ 未获取到数据，请检查标的代码或网络")
         else:
+            _data_start = df.index[0].strftime("%Y-%m-%d")
+            _data_end = df.index[-1].strftime("%Y-%m-%d")
+            _eff_start = max(str(grid_start), _data_start)
+            _eff_end = min(str(grid_end), _data_end)
+            if _data_start > str(grid_start) or _data_end < str(grid_end):
+                st.info(f"数据范围: {_data_start} ~ {_data_end}，实际回测区间: {_eff_start} ~ {_eff_end}")
+            df = df[_eff_start:_eff_end]
+            if df_minute is not None:
+                df_minute = df_minute[_eff_start:_eff_end]
             with st.spinner("运行网格回测..."):
                 trades, metrics, engine = run_grid_backtest(
-                    grid_symbol, df, grid_type=grid_type,
-                    step_value=grid_step, amount_per_grid=grid_amount,
-                    max_positions=grid_max_pos,
-                    initial_capital=grid_capital,
-                    initial_shares=grid_init_shares,
+                    grid_symbol, df,
+                    price_low=grid_price_low, price_high=grid_price_high,
                     base_price=grid_base_price,
-                    commission=comm, slippage=slip,
+                    trigger_type=grid_trigger_type,
+                    buy_threshold=buy_threshold / 100 if grid_trigger_type == "percent" else buy_threshold,
+                    sell_threshold=sell_threshold / 100 if grid_trigger_type == "percent" else sell_threshold,
+                    bounce_buy=bounce_buy / 100,
+                    pullback_sell=pullback_sell / 100,
+                    amount_per_grid=grid_amount,
+                    max_positions=grid_max_pos,
+                    initial_shares=grid_init_amount,
+                    commission=comm, stamp_duty=stamp, slippage=slip,
+                    df_minute=df_minute,
                 )
 
             from etf_grid import _is_t0
             is_t0 = _is_t0(grid_symbol)
-            st.subheader(f"网格回测: {grid_symbol}  |  {grid_start} ~ {grid_end}  |  {'T+0' if is_t0 else 'T+1'}")
+            st.subheader(f"网格回测: {grid_symbol}  |  {_eff_start} ~ {_eff_end}  |  {'T+0' if is_t0 else 'T+1'}")
 
             # 指标卡片
-            total_cap = grid_capital if grid_capital > 0 else grid_n * grid_amount if grid_n > 0 else grid_amount * grid_max_pos
+            total_cap = grid_init_amount + grid_amount * grid_max_pos
             last_close = float(df["close"].iloc[-1]) if len(df) > 0 else 0
             pos_value = metrics['持仓份额'] * last_close
             total_asset = metrics['剩余现金'] + pos_value
-            mcols = st.columns(8)
+            mcols = st.columns(10)
             mcols[0].metric("总收益", f"{metrics['总收益']:.3%}")
-            mcols[1].metric("初始现金", f"{total_cap:,.0f}")
-            mcols[2].metric("总资产", f"{total_asset:,.0f}")
-            mcols[3].metric("持仓金额", f"{pos_value:,.0f}")
-            mcols[4].metric("买入次数", metrics.get("买入次数", 0))
-            mcols[5].metric("卖出次数", metrics.get("卖出次数", 0))
-            mcols[6].metric("胜率", f"{metrics['胜率']:.1%}")
-            mcols[7].metric("最大回撤", f"{metrics['最大回撤']:.3%}")
+            mcols[1].metric("持有不动", f"{metrics['持有不动收益']:.3%}",
+                            help="同期持有该ETF不操作的收益")
+            mcols[2].metric("网格超额", f"{metrics['网格超额收益']:.3%}",
+                            help="网格交易相比持有不动的超额收益")
+            mcols[3].metric("做T资金", f"{grid_trade_cap:,.0f}")
+            mcols[4].metric("总资产", f"{total_asset:,.0f}")
+            mcols[5].metric("持仓金额", f"{pos_value:,.0f}")
+            mcols[6].metric("买入次数", metrics.get("买入次数", 0))
+            mcols[7].metric("卖出次数", metrics.get("卖出次数", 0))
+            mcols[8].metric("胜率", f"{metrics['胜率']:.1%}")
+            mcols[9].metric("最大回撤", f"{metrics['最大回撤']:.3%}")
 
             # 交易明细
             st.divider()
@@ -1003,65 +1102,168 @@ if _mode == "网格交易":
             st.divider()
             st.markdown("### 📊 价格走势 + 网格线")
             if len(df) > 0:
-                daily = df.resample('D').agg({
-                    'open': 'first', 'high': 'max',
-                    'low': 'min', 'close': 'last'
-                }).dropna()
+                _label = lambda p: "日线" if p == "daily" else f"{p}分钟"
+                chart_opts = {grid_period: _label(grid_period)}
+                if grid_period != "daily":
+                    chart_opts["daily"] = "日线"
+                    for p in ["5", "15", "30", "60"]:
+                        if p != grid_period:
+                            chart_opts[p] = _label(p)
+                chart_period = st.radio("K线周期", list(chart_opts.keys()),
+                                        format_func=lambda x: chart_opts[x],
+                                        horizontal=True, key="g_chart_k")
+                try:
+                    if chart_period == "daily":
+                        chart_df = df.resample('D').agg({
+                            'open': 'first', 'high': 'max',
+                            'low': 'min', 'close': 'last'
+                        })
+                    elif chart_period == grid_period:
+                        chart_df = df
+                    else:
+                        minutes = int(chart_period)
+                        chart_df = df.resample(f'{minutes}min').agg({
+                            'open': 'first', 'high': 'max',
+                            'low': 'min', 'close': 'last'
+                        })
+                    chart_df = chart_df.dropna(how='all')
+                except Exception:
+                    chart_df = df
+
                 fig2 = go.Figure()
                 fig2.add_trace(go.Candlestick(
-                    x=daily.index,
-                    open=daily['open'], high=daily['high'],
-                    low=daily['low'], close=daily['close'],
+                    x=chart_df.index,
+                    open=chart_df['open'], high=chart_df['high'],
+                    low=chart_df['low'], close=chart_df['close'],
                     name=grid_symbol,
                     increasing_line_color='#E53935', decreasing_line_color='#43A047',
                 ))
-                # 网格线（灰度 >0=显示，0=隐藏，方便排查其他横线干扰）
-                # 网格线已移除，保留 K 线 + B/S 标记
-                # 买卖标记：圆点在实际成交价（对齐网格线），B/S 在当天极值外侧
                 if trades:
-                    buy_dates, buy_ps, sell_dates, sell_ps = [], [], [], []
-                    b_text_y, s_text_y = [], []
-                    daily_high = daily['high'].to_dict()
-                    daily_low = daily['low'].to_dict()
+                    buy_x, buy_y, sell_x, sell_y = [], [], [], []
                     for t in trades:
-                        d = t.datetime.strftime("%Y-%m-%d")
-                        ts = pd.Timestamp(d)
                         if t.side == "buy":
-                            buy_dates.append(d); buy_ps.append(t.price)
-                            low_px = daily_low.get(ts, t.price)
-                            b_text_y.append(low_px * 0.995)
+                            buy_x.append(t.datetime); buy_y.append(t.price)
                         else:
-                            sell_dates.append(d); sell_ps.append(t.price)
-                            high_px = daily_high.get(ts, t.price)
-                            s_text_y.append(high_px * 1.005)
-                    # 实际成交价小圆点（B=红，S=蓝）
-                    fig2.add_trace(go.Scatter(
-                        x=buy_dates, y=buy_ps, mode='markers',
-                        marker=dict(symbol='circle', size=8, color='#D32F2F', line=dict(color='white', width=1)),
-                        name='买入', hovertemplate='买入 %{y:.3f}<extra></extra>', showlegend=False
-                    ))
-                    fig2.add_trace(go.Scatter(
-                        x=sell_dates, y=sell_ps, mode='markers',
-                        marker=dict(symbol='circle', size=8, color='#1976D2', line=dict(color='white', width=1)),
-                        name='卖出', hovertemplate='卖出 %{y:.3f}<extra></extra>', showlegend=False
-                    ))
-                    # B/S 文字（B=红在K线下方，S=蓝在K线上方）
-                    fig2.add_trace(go.Scatter(
-                        x=buy_dates, y=b_text_y, mode='text',
-                        text=['B']*len(buy_dates),
-                        textfont=dict(color='#D32F2F', size=12, family='Arial Black'),
-                        name='买入', hovertemplate='B %{y:.3f}<extra></extra>'
-                    ))
-                    fig2.add_trace(go.Scatter(
-                        x=sell_dates, y=s_text_y, mode='text',
-                        text=['S']*len(sell_dates),
-                        textfont=dict(color='#1976D2', size=12, family='Arial Black'),
-                        name='卖出', hovertemplate='S %{y:.3f}<extra></extra>'
-                    ))
-                fig2.update_layout(height=600, template='plotly_white',
-                                   title=f'{grid_symbol} K 线 + 网格线')
-                fig2.update_yaxes(showgrid=False)
+                            sell_x.append(t.datetime); sell_y.append(t.price)
+                    fig2.add_trace(go.Scatter(x=buy_x, y=buy_y, mode='markers',
+                        marker=dict(symbol='circle', size=9, color='#D32F2F',
+                                    line=dict(color='white', width=1.5)),
+                        name='买入', hovertemplate='买入 %{y:.3f}<extra></extra>'))
+                    fig2.add_trace(go.Scatter(x=sell_x, y=sell_y, mode='markers',
+                        marker=dict(symbol='circle', size=9, color='#1976D2',
+                                    line=dict(color='white', width=1.5)),
+                        name='卖出', hovertemplate='卖出 %{y:.3f}<extra></extra>'))
+
+                fig2.update_layout(
+                    height=500, template='plotly_white',
+                    title=f'{grid_symbol} {chart_opts[chart_period]}',
+                    xaxis_rangeslider_visible=False,
+                    hovermode='x unified',
+                )
+                if chart_period != "daily":
+                    fig2.update_xaxes(tickformat='%m-%d %H:%M')
+                else:
+                    fig2.update_xaxes(tickformat='%m-%d')
+                fig2.update_yaxes(showgrid=True, gridcolor='#f0f0f0')
                 st.plotly_chart(fig2, width='stretch')
+
+            # ── 网格参数寻优 ──
+            st.divider()
+            st.markdown("## 🔍 参数寻优")
+            import itertools
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                opt_sell = st.slider("卖出阈值 %", 0.3, 5.0, (0.5, 2.0), 0.2, key="g_opt_sell")
+                opt_buy = st.slider("买入阈值 %", 0.3, 5.0, (0.5, 2.0), 0.2, key="g_opt_buy")
+            with c2:
+                opt_pull = st.slider("回落 %", 0.0, 1.0, (0.0, 0.2), 0.1, key="g_opt_pull")
+                opt_bounce = st.slider("反弹 %", 0.0, 1.0, (0.0, 0.2), 0.1, key="g_opt_bounce")
+            with c3:
+                opt_maxp = st.slider("最大持仓", 2, 30, (5, 15), 1, key="g_opt_maxp")
+                opt_sort = st.selectbox("排序指标", ["卡尔玛比率", "总收益", "最大回撤"], key="g_opt_sort")
+
+            def _opt_range(lo, hi, step):
+                n = int(round((hi - lo) / step)) + 1
+                return [round(lo + i * step, 4) for i in range(n)]
+
+            sell_vals = [v/100 for v in _opt_range(opt_sell[0], opt_sell[1], 0.2)]
+            buy_vals = [v/100 for v in _opt_range(opt_buy[0], opt_buy[1], 0.2)]
+            pull_vals = [v/100 for v in _opt_range(opt_pull[0], opt_pull[1], 0.1)]
+            bounce_vals = [v/100 for v in _opt_range(opt_bounce[0], opt_bounce[1], 0.1)]
+            maxp_vals = list(range(opt_maxp[0], opt_maxp[1] + 1))
+            total = len(sell_vals) * len(buy_vals) * len(pull_vals) * len(bounce_vals) * len(maxp_vals)
+            st.caption(f"共 {total} 种组合")
+
+            if st.button("🚀 开始寻优", type="primary", width='stretch', key="g_opt_btn"):
+                msg = st.info(f"正在搜索 {total} 种组合（{grid_period}数据，共{len(df)}根K线）...")
+                prog = st.progress(0, text="")
+                rows = []
+                done = 0
+                for sell_th, buy_th, pull, bounce, maxp in itertools.product(
+                        sell_vals, buy_vals, pull_vals, bounce_vals, maxp_vals):
+                    try:
+                        tt, mm, _ = run_grid_backtest(
+                            grid_symbol, df,
+                            price_low=grid_price_low, price_high=grid_price_high,
+                            base_price=grid_base_price,
+                            trigger_type=grid_trigger_type,
+                            sell_threshold=sell_th, buy_threshold=buy_th,
+                            pullback_sell=pull, bounce_buy=bounce,
+                            amount_per_grid=grid_amount,
+                            max_positions=maxp,
+                            initial_shares=grid_init_amount,
+                            commission=comm, stamp_duty=stamp, slippage=slip,
+                            df_minute=df_minute,
+                        )
+                        ret = mm['总收益']
+                        dd = abs(mm['最大回撤'])
+                        calmar = ret / dd if dd > 0 else 0
+                        rows.append((sell_th*100, buy_th*100, pull*100, bounce*100,
+                                     maxp, ret, dd, calmar, mm['买入次数']+mm['卖出次数']))
+                    except Exception:
+                        pass
+                    done += 1
+                    if done % max(1, total // 20) == 0 or done == total:
+                        prog.progress(done / total, text=f"{done}/{total}")
+                prog.empty()
+                msg.empty()
+                st.session_state["_opt_rows"] = rows
+                st.session_state["_opt_sort"] = opt_sort
+                st.session_state["_opt_done"] = True
+                st.rerun()
+
+            if st.session_state.get("_opt_done") and st.session_state.get("_opt_rows"):
+                rows = st.session_state["_opt_rows"]
+                if rows:
+                    sort_key = {"卡尔玛比率": 7, "总收益": 5, "最大回撤": 6}[st.session_state["_opt_sort"]]
+                    rows.sort(key=lambda r: -r[sort_key] if sort_key != 6 else r[sort_key])
+                    top_n = st.number_input("显示前N组", 5, 50, 15, key="g_opt_top")
+                    df_opt = pd.DataFrame(rows, columns=["卖出%", "买入%", "回落%", "反弹%",
+                                                          "最大持仓", "收益", "回撤", "卡尔玛", "交易"])
+                    df_opt["收益"] = df_opt["收益"].map("{:.2%}".format)
+                    df_opt["回撤"] = df_opt["回撤"].map("{:.2%}".format)
+                    df_opt["卡尔玛"] = df_opt["卡尔玛"].map("{:.2f}".format)
+                    df_opt["卖出%"] = df_opt["卖出%"].map("{:.1f}".format)
+                    df_opt["买入%"] = df_opt["买入%"].map("{:.1f}".format)
+                    df_opt["回落%"] = df_opt["回落%"].map("{:.1f}".format)
+                    df_opt["反弹%"] = df_opt["反弹%"].map("{:.1f}".format)
+                    st.dataframe(df_opt.head(top_n), hide_index=True, width='stretch')
+
+            with st.expander("📋 回测参数（排查问题用）", expanded=False):
+                _params = {
+                    "标的": grid_symbol, "K线粒度": grid_period, "数据源": grid_source,
+                    "涨跌类型": grid_trigger_type,
+                    "上涨卖出%": sell_threshold, "回落卖出%": pullback_sell,
+                    "下跌买入%": buy_threshold, "反弹买入%": bounce_buy,
+                    "每次做T金额": grid_amount, "做T资金": grid_trade_cap,
+                    "做T笔数": grid_max_pos, "初始底仓金额": grid_init_amount,
+                    "初始基准价": grid_base_price,
+                    "价格下限": grid_price_low, "价格上限": grid_price_high,
+                    "开始日期": str(grid_start), "结束日期": str(grid_end),
+                    "佣金率": comm, "滑点": slip,
+                    "数据行数": len(df), "数据范围": f"{_eff_start} ~ {_eff_end}",
+                }
+                st.code("\n".join(f"{k}: {v}" for k, v in _params.items()), language="text")
 
     st.stop()  # 网格模式下不执行动量逻辑
 

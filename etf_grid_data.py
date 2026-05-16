@@ -25,12 +25,41 @@ def _market(symbol: str) -> str:
     return "sh" if symbol.startswith(("5", "6")) else "sz"
 
 
+def _tsanghi_exchange(symbol: str) -> str:
+    return "XSHG" if symbol.startswith(("5", "6")) else "XSHE"
+
+
+# 到 tsanghi.com 注册获取 token，替换后可用
+TSANGHI_TOKEN = ""
+
+
 def _cache_path(symbol: str, period: str, source: str) -> Path:
-    if period == "daily":
+    if source == "tsanghi":
+        fname = f"grid_{symbol}_{period}_{source}.csv"
+    elif period == "daily":
         fname = f"grid_{symbol}_daily.csv"
     else:
         fname = f"grid_{symbol}_{period}min_{source}.csv"
     return CACHE_DIR / fname
+
+
+def _fetch_minute_sina(symbol: str, period: str) -> pd.DataFrame:
+    """拉取新浪分钟 K 线（约 1970 根，~41 个交易日）"""
+    m = _market(symbol)
+    try:
+        df = ak.stock_zh_a_minute(symbol=f"{m}{symbol}", period=period, adjust="qfq")
+    except Exception:
+        return pd.DataFrame()
+    if df is None or len(df) == 0:
+        return pd.DataFrame()
+    col_map = {"day": "datetime", "开盘": "open", "收盘": "close",
+               "最高": "high", "最低": "low", "成交量": "volume"}
+    df = df.rename(columns=col_map)
+    df["datetime"] = pd.to_datetime(df["datetime"])
+    df = df.set_index("datetime")
+    df = df[["open", "high", "low", "close", "volume"]].sort_index()
+    df = df[~df.index.duplicated(keep="last")]
+    return df.astype(float)
 
 
 def _fetch_minute_em(symbol: str, period: str, start_date: str, end_date: str) -> pd.DataFrame:
@@ -58,6 +87,42 @@ def _fetch_minute_em(symbol: str, period: str, start_date: str, end_date: str) -
     df = df[["open", "high", "low", "close", "volume"]].sort_index()
     df = df[~df.index.duplicated(keep="last")]
     return df.astype(float)
+
+
+def _fetch_data_tsanghi(symbol: str, period: str, start_date: str, end_date: str) -> pd.DataFrame:
+    """拉取沧海数据（Tsanghi）日线/分钟线，有缓存时不重复请求"""
+    import requests, time
+    exch = _tsanghi_exchange(symbol)
+    freq = "daily" if period == "daily" else "5min"
+    url = f"https://tsanghi.com/api/fin/etf/{exch}/{freq}?token={TSANGHI_TOKEN}&ticker={symbol}"
+    url += f"&start_date={start_date}&end_date={end_date}&fmt=json&order=1"
+    for attempt in range(3):
+        try:
+            r = requests.get(url, timeout=15)
+            data = r.json()
+            if data.get("code") != 200:
+                time.sleep(2)
+                continue
+            rows = data.get("data", [])
+            if not rows:
+                return pd.DataFrame()
+            df = pd.DataFrame(rows)
+            df = df.rename(columns={"date": "datetime"})
+            df["datetime"] = pd.to_datetime(df["datetime"])
+            df = df.set_index("datetime")
+            for c in ["open", "high", "low", "close"]:
+                df[c] = pd.to_numeric(df[c], errors="coerce")
+            if "volume" in df.columns:
+                df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
+            else:
+                df["volume"] = 0
+            df = df[["open", "high", "low", "close", "volume"]].sort_index()
+            df = df[~df.index.duplicated(keep="last")]
+            return df.astype(float)
+        except Exception:
+            if attempt < 2:
+                time.sleep(3)
+    return pd.DataFrame()
 
 
 def _fetch_daily_sina(symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
@@ -102,6 +167,10 @@ def _fetch_daily_em(symbol: str, start_date: str, end_date: str) -> pd.DataFrame
 def _fetch_data(symbol: str, period: str, start_date: str, end_date: str,
                 source: str = "akshare") -> pd.DataFrame:
     """拉取数据，带重试"""
+    if source == "tsanghi":
+        if not TSANGHI_TOKEN:
+            raise RuntimeError("沧海 Token 未设置，到 tsanghi.com 注册获取")
+        return _fetch_data_tsanghi(symbol, period, start_date, end_date)
     last_err = None
     for attempt in range(3):
         try:
@@ -115,8 +184,10 @@ def _fetch_data(symbol: str, period: str, start_date: str, end_date: str,
             else:
                 if source == "em":
                     return _fetch_minute_em(symbol, period, start_date, end_date)
+                elif source == "sina":
+                    return _fetch_minute_sina(symbol, period)
                 else:
-                    raise ValueError(f"分钟线仅支持 em 数据源, 不支持: {source}")
+                    raise ValueError(f"分钟线仅支持 em/sina 数据源, 不支持: {source}")
         except Exception as e:
             last_err = e
             import time
@@ -160,11 +231,16 @@ def load_grid_data(symbol: str, period: str = "5",
                 if len(trim) > 0:
                     return trim
 
-    df = _fetch_data(symbol, period, start_date, end_date, source=source)
-    if len(df) == 0 and cache_file.exists():
-        cached = pd.read_csv(cache_file, index_col=0, parse_dates=True)
-        trim = cached[(cached.index >= start_date) & (cached.index <= end_date)]
-        return trim if len(trim) > 0 else df
+    try:
+        df = _fetch_data(symbol, period, start_date, end_date, source=source)
+    except Exception:
+        df = pd.DataFrame()
+    if len(df) == 0:
+        if cache_file.exists():
+            cached = pd.read_csv(cache_file, index_col=0, parse_dates=True)
+            trim = cached[(cached.index >= start_date) & (cached.index <= end_date)]
+            return trim if len(trim) > 0 else pd.DataFrame()
+        return pd.DataFrame()
     if len(df) == 0:
         return df
 
