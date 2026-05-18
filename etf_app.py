@@ -1046,7 +1046,8 @@ if _mode == "网格交易":
                            horizontal=True, key=_kl_src_key)
         _kl_start, _kl_end = st.columns(2)
         with _kl_start:
-            _kl_sd = st.date_input("开始", pd.Timestamp("2026-01-01"), key="g_kl_sd")
+            _kl_sd = st.date_input("开始", pd.Timestamp("2026-01-01"), key="g_kl_sd",
+                                    max_value=pd.Timestamp.today())
         with _kl_end:
             _kl_ed = st.date_input("结束", pd.Timestamp.today(), key="g_kl_ed")
         _kl_fetch = st.button("🔍 查询", type="primary", key="g_kl_fetch")
@@ -1467,8 +1468,10 @@ if _mode == "多因子轮动":
     st.sidebar.markdown("**2. 回测时间 & 数据**")
     mf_source = st.sidebar.selectbox("数据源", ["tencent", "akshare", "em"], index=0,
         format_func=lambda x: {"tencent": "腾讯财经", "akshare": "AKShare(Sina+Tencent)", "em": "东方财富"}[x])
-    mf_start = st.sidebar.date_input("开始日期", value=pd.Timestamp("2020-01-01"))
-    mf_end = st.sidebar.date_input("结束日期", value=datetime.today())
+    mf_start = st.sidebar.date_input("开始日期", value=pd.Timestamp("2020-01-01"),
+                                     max_value=pd.Timestamp.today())
+    mf_end = st.sidebar.date_input("结束日期", value=datetime.today(),
+                                   max_value=pd.Timestamp.today())
 
     st.sidebar.markdown("**3. 策略参数**")
     mf_top_n = st.sidebar.slider("持仓数量", 1, 8, 3,
@@ -1716,7 +1719,8 @@ _end_val = pd.Timestamp(_qp("end", datetime.today().strftime("%Y-%m-%d")))
 st.sidebar.markdown("**回测日期**")
 sb_date_col1, sb_date_col2 = st.sidebar.columns(2)
 with sb_date_col1:
-    start_date = st.date_input("开始", value=_start_val, key="sd_start", format="YYYY-MM-DD")
+    start_date = st.date_input("开始", value=_start_val, key="sd_start", format="YYYY-MM-DD",
+                               max_value=pd.Timestamp.today())
     start_date = pd.Timestamp(start_date)
 with sb_date_col2:
     end_date = st.date_input("结束", value=_end_val, key="sd_end", format="YYYY-MM-DD",
