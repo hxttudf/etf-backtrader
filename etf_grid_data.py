@@ -219,6 +219,8 @@ def load_grid_data(symbol: str, period: str = "5",
         end_date = now.strftime("%Y-%m-%d")
     if start_date is None:
         start_date = (now - pd.Timedelta(days=365)).strftime("%Y-%m-%d")
+    _sd = pd.Timestamp(start_date)
+    _ed = pd.Timestamp(end_date)
 
     cache_file = _cache_path(symbol, period, source)
 
@@ -226,8 +228,8 @@ def load_grid_data(symbol: str, period: str = "5",
         cached = pd.read_csv(cache_file, index_col=0, parse_dates=True)
         if len(cached) > 0:
             cache_s, cache_e = cached.index[0], cached.index[-1]
-            if cache_s <= pd.Timestamp(start_date) and cache_e >= pd.Timestamp(end_date):
-                trim = cached[(cached.index >= start_date) & (cached.index <= end_date)]
+            if cache_s <= _sd and cache_e >= _ed:
+                trim = cached[(cached.index >= _sd) & (cached.index <= _ed)]
                 if len(trim) > 0:
                     return trim
 
@@ -238,7 +240,7 @@ def load_grid_data(symbol: str, period: str = "5",
     if len(df) == 0:
         if cache_file.exists():
             cached = pd.read_csv(cache_file, index_col=0, parse_dates=True)
-            trim = cached[(cached.index >= start_date) & (cached.index <= end_date)]
+            trim = cached[(cached.index >= _sd) & (cached.index <= _ed)]
             return trim if len(trim) > 0 else pd.DataFrame()
         return pd.DataFrame()
     if len(df) == 0:
@@ -253,5 +255,5 @@ def load_grid_data(symbol: str, period: str = "5",
         combined = df
 
     combined.to_csv(cache_file)
-    trim = combined[(combined.index >= start_date) & (combined.index <= end_date)]
+    trim = combined[(combined.index >= _sd) & (combined.index <= _ed)]
     return trim

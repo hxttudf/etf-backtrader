@@ -24,8 +24,25 @@ from etf_data import (DEFAULT_CONFIG, calc_indicators, load_config, load_prices,
                         load_open_prices, load_midday_prices, load_afternoon_open_prices,
                         midday_data_available)
 from etf_backtrader import run_backtest_bt, position_dist_bt, STRATEGIES
-from etf_grid import run_grid_backtest, ThsGridConfig
-from etf_grid_data import load_grid_data
+try:
+    from etf_grid import run_grid_backtest, ThsGridConfig
+    _HAS_GRID = True
+except ImportError:
+    _HAS_GRID = False
+try:
+    from etf_grid_data import load_grid_data
+except ImportError:
+    load_grid_data = None
+try:
+    from multifactor.portfolio.scoring import FactorScorer
+    from multifactor.portfolio.construction import TopNPortfolio
+    from multifactor.backtest.engine import MultiFactorBacktest
+    from multifactor.data.loader import DataLoader
+    from multifactor.evaluation.ic import icir
+    from multifactor.evaluation.layering import layer_returns, layer_performance
+    _HAS_MULTIFACTOR = True
+except ImportError:
+    _HAS_MULTIFACTOR = False
 import datetime as _dt
 import json
 
@@ -743,11 +760,19 @@ if "cfg" not in st.session_state:
 cfg = st.session_state.cfg
 
 # ── 页面模式切换 ─────────────────────────────────────────
-_mode = st.sidebar.radio("模式", ["双动量轮动", "网格交易"], horizontal=True, key="app_mode")
+_mode_options = ["双动量轮动"]
+if _HAS_GRID:
+    _mode_options.append("网格交易")
+if _HAS_MULTIFACTOR:
+    _mode_options.append("多因子轮动")
+_mode = st.sidebar.radio("模式", _mode_options, horizontal=True, key="app_mode")
 
 # ── Sidebar ──────────────────────────────────────────────
 
 if _mode == "网格交易":
+    if not _HAS_GRID:
+        st.error("网格交易模块 (etf_grid.py) 导入失败")
+        st.stop()
     # ═══════════════════════════════════════════════════════
     # 网格交易参数（支持 URL query params 持久化）
     # ═══════════════════════════════════════════════════════
@@ -1404,6 +1429,281 @@ if st.session_state.get("show_config", False):
         if c2.button("↩ 撤销", width='stretch'):
             st.session_state.pop("cfg_json", None)
             st.rerun()
+    st.stop()
+
+if _mode == "多因子轮动":
+    if not _HAS_MULTIFACTOR:
+        st.error("多因子模块导入失败，请确认 multifactor/ 目录已部署且依赖完整")
+        st.stop()
+    # ═══════════════════════════════════════════════════════
+    # 多因子轮动 — 基于IC加权评分 + Top-N选股
+    # ═══════════════════════════════════════════════════════
+    _FACTOR_CN = {
+        "momentum": "📈动量",
+        "momentum_52w_high": "📈52周新高",
+        "risk_adjusted_momentum": "📈风险调整动量",
+        "price_to_ma": "📊价格/均线",
+        "ma_slope": "📊均线斜率",
+        "adx": "📊ADX趋势强度",
+        "historical_volatility": "📉历史波动率",
+        "parkinson_volatility": "📉Parkinson波动率",
+        "downside_risk": "📉下行风险",
+        "volume_trend": "🔊成交量趋势",
+        "volume_momentum": "🔊成交量动量",
+        "liquidity_screen": "🔊流动性筛选",
+    }
+    st.sidebar.header("📐 参数配置")
+
+    mf_groups = st.sidebar.multiselect(
+        "1. 选择ETF组合",
+        options=list(cfg["groups"].keys()),
+        default=["红纳创黄C"],
+        help="选择要参与轮动的ETF组合，支持多选合并。推荐「红纳创黄C」含4只全缓存ETF",
+    )
+    mf_universe = {}
+    for g in mf_groups:
+        mf_universe.update(cfg["groups"][g])
+
+    st.sidebar.markdown("**2. 回测时间 & 数据**")
+    mf_source = st.sidebar.selectbox("数据源", ["tencent", "akshare", "em"], index=0,
+        format_func=lambda x: {"tencent": "腾讯财经", "akshare": "AKShare(Sina+Tencent)", "em": "东方财富"}[x])
+    mf_start = st.sidebar.date_input("开始日期", value=pd.Timestamp("2020-01-01"))
+    mf_end = st.sidebar.date_input("结束日期", value=datetime.today())
+
+    st.sidebar.markdown("**3. 策略参数**")
+    mf_top_n = st.sidebar.slider("持仓数量", 1, 8, 3,
+        help="每次再平衡时买入排名前N的ETF")
+    mf_rebal = st.sidebar.selectbox("再平衡频率", ["weekly", "monthly", "quarterly"], index=1,
+        format_func=lambda x: {"weekly": "每周", "monthly": "每月", "quarterly": "每季度"}[x],
+        help="每隔多久重新计算一次持仓")
+    mf_scoring = st.sidebar.selectbox("因子合成方法", ["ic_weighted", "equal_weighted"], index=0,
+        format_func=lambda x: {"ic_weighted": "IC加权（推荐）", "equal_weighted": "等权"}[x],
+        help="IC加权: 根据各因子历史预测能力动态分配权重；等权: 所有因子权重相同")
+
+    with st.sidebar.expander("4. 因子开关（启用/禁用）", expanded=False):
+        st.caption("关闭不需要的因子类别，加快计算速度")
+        mf_enable_momentum = st.checkbox("📈 动量因子 (Momentum)", value=True, key="mf_mom",
+            help="包含: ROC多周期动量、52周新高、风险调整动量")
+        mf_enable_trend = st.checkbox("📊 趋势因子 (Trend)", value=True, key="mf_tr",
+            help="包含: 价格相对均线位置、均线斜率、ADX趋势强度")
+        mf_enable_vol = st.checkbox("📉 波动率因子 (Volatility)", value=True, key="mf_vol",
+            help="包含: 历史波动率、Parkinson波动率、下行风险")
+        mf_enable_volume = st.checkbox("🔊 成交量因子 (Volume)", value=True, key="mf_volm",
+            help="包含: 成交量趋势、成交量动量、流动性筛选")
+
+    with st.sidebar.expander("💡 调优提示", expanded=False):
+        st.markdown("""
+        **效果不好的排查步骤:**
+        1. 首次运行先只开 **动量+趋势**（最稳）
+        2. 看「IC分析」Tab: Mean IC > 0 才是有效因子
+        3. 关掉无效因子，保留有效因子即可
+        4. ETF 组合至少选 4 只以上才有区分度
+        5. 数据源推荐 `akshare`（历史更长）
+        """)
+
+    mf_run = st.sidebar.button("🚀 运行多因子回测", type="primary")
+
+    # ── 主界面 ───────────────────────────────────────────
+    st.title("📊 多因子轮动系统")
+    st.markdown(
+        f"**ETF组合:** {' + '.join(mf_groups)}  "
+        f"**| 持仓:** Top-{mf_top_n}  "
+        f"**| 再平衡:** {mf_rebal}  "
+        f"**| 评分:** {'IC加权' if mf_scoring == 'ic_weighted' else '等权'}"
+    )
+
+    mf_tab1, mf_tab2, mf_tab3, mf_tab4 = st.tabs(["📈 回测结果", "📋 因子信号", "📉 IC分析", "📊 分层回测"])
+
+    if mf_run or "mf_result" in st.session_state:
+        _mf_status = st.status("正在运行多因子回测...", expanded=True) if mf_run else None
+        try:
+            if _mf_status:
+                _mf_status.write("📥 加载价格数据...")
+            from multifactor.factors.momentum import Momentum, Momentum52wHigh, RiskAdjustedMomentum
+            from multifactor.factors.trend import PriceToMA, MASlope, ADX
+            from multifactor.factors.volatility import HistoricalVolatility, ParkinsonVolatility, DownsideRisk
+            from multifactor.factors.volume import VolumeTrend, VolumeMomentum, LiquidityScreen
+
+            factors = []
+            if mf_enable_momentum:
+                factors.extend([Momentum(), Momentum52wHigh(), RiskAdjustedMomentum()])
+            if mf_enable_trend:
+                factors.extend([PriceToMA(), MASlope(), ADX(period=14)])
+            if mf_enable_vol:
+                factors.extend([HistoricalVolatility(), ParkinsonVolatility(), DownsideRisk()])
+            if mf_enable_volume:
+                factors.extend([VolumeTrend(), VolumeMomentum(), LiquidityScreen()])
+
+            if _mf_status:
+                _mf_status.write(f"🧮 {len(factors)} 个因子准备就绪")
+
+            scorer = FactorScorer(
+                method=mf_scoring,
+                ic_half_life=60, winsorize=3, neutralization="market", rank=True,
+            )
+            portfolio = TopNPortfolio(
+                top_n=mf_top_n, rebalance_freq=mf_rebal,
+                commission=0.0003, slippage=0.001, min_hold_days=5,
+            )
+            loader = DataLoader(source=mf_source)
+
+            bt = MultiFactorBacktest(
+                factors=factors,
+                factor_weights={f.name: 1.0 for f in factors},
+                scorer=scorer, portfolio=portfolio, data_loader=loader,
+                start_date=str(mf_start), end_date=str(mf_end),
+                initial_capital=100000,
+            )
+            mf_result = bt.run(mf_universe)
+            st.session_state["mf_result"] = mf_result
+            if _mf_status:
+                _mf_status.success("回测完成!")
+        except Exception as e:
+            if _mf_status:
+                _mf_status.error(f"回测失败: {e}")
+            st.error(f"运行出错: {e}")
+            st.stop()
+        finally:
+            if _mf_status:
+                _mf_status.update(state="complete")
+
+    mf_result = st.session_state.get("mf_result")
+    if mf_result is None:
+        mf_intro, mf_tips = st.tabs(["📖 使用说明", "💡 调优技巧"])
+        with mf_intro:
+            st.markdown("""
+            ### 快速开始
+
+            1. **左侧选 ETF 组合** — 建议选含 4+ 只以上的组合（默认"红纳创黄B"含红利低波、纳指、创业板、黄金）
+            2. **设回测时间** — 至少 1 年以上，越长越稳定
+            3. **调策略参数** — Top-N（持仓数）、再平衡频率、评分方法
+            4. **点击「🚀 运行多因子回测」**
+
+            ### 数据说明
+
+            - 首次运行会自动下载价格数据，耗时取决于网络
+            - 成交量/OHLC 数据通过 AKShare 获取(并行4线程)，首次会缓存到本地
+            - 第二次运行会快很多（使用缓存）
+            - 如长时间没有响应，请在终端查看打印的进度日志
+            """)
+        with mf_tips:
+            st.markdown("""
+            ### 效果不好的常见原因
+
+            | 问题 | 解决方法 |
+            |------|---------|
+            | **ETF太少** (< 4只) | 多选组合，或创建更大的组合 |
+            | **时间太短** (< 1年) | 使用 `akshare` 数据源，可追溯到 2019 年 |
+            | **因子过多噪音大** | 先只开"动量"和"趋势"，波动率/成交量因子信号噪声较大 |
+            | **IC 很接近 0** | 说明因子无效。到「IC分析」Tab 看哪些因子 Mean IC > 0 |
+            | **IC加权不稳定** | 先切到"等权"测试，确认因子方向一致后再用 IC 加权 |
+            | **再平衡太快** | 周频换手率高，建议用月频 |
+
+            ### 最佳实践
+
+            1. **先用 ETF 组合「红纳创黄B」+ 仅开动量/趋势**，看 baseline
+            2. 到「IC分析」Tab 查看各因子的 Mean IC（>0 才有效）
+            3. 关掉 Mean IC ≤ 0 的因子，只保留有效因子
+            4. 再切换到 IC 加权，让系统自动分配权重
+            5. 最后逐步加入波动率/成交量因子，观察是否有改进
+            """)
+        st.stop()
+        st.stop()
+
+    # ── 回测结果 Tab ─────────────────────────────────────
+    with mf_tab1:
+        m = mf_result.metrics
+        cols = st.columns(6)
+        cols[0].metric("CAGR", f"{m.get('cagr', 0)*100:.1f}%")
+        cols[1].metric("Sharpe", f"{m.get('sharpe', 0):.2f}")
+        cols[2].metric("Calmar", f"{m.get('calmar', 0):.2f}")
+        cols[3].metric("Max DD", f"{m.get('max_drawdown', 0)*100:.1f}%")
+        cols[4].metric("Win Rate", f"{m.get('win_rate', 0)*100:.1f}%")
+        cols[5].metric("Turnover", f"{m.get('avg_turnover', 0)*100:.1f}%/d")
+
+        nav_fig = go.Figure()
+        nav_fig.add_trace(go.Scatter(
+            x=mf_result.nav.index, y=mf_result.nav.values,
+            name="Multi-Factor", line=dict(color="blue", width=2),
+        ))
+        nav_fig.update_layout(height=400, margin=dict(l=20, r=20, t=30, b=20), hovermode="x unified")
+        st.plotly_chart(nav_fig, use_container_width=True)
+
+        st.subheader("持仓权重（各ETF占比）")
+        wfig = go.Figure()
+        for col in mf_result.holdings.columns:
+            wfig.add_trace(go.Scatter(
+                x=mf_result.holdings.index, y=mf_result.holdings[col],
+                name=col, mode="lines", stackgroup="one", groupnorm="percent",
+            ))
+        wfig.update_layout(height=300, margin=dict(l=20, r=20, t=10, b=20), hovermode="x unified")
+        st.plotly_chart(wfig, use_container_width=True)
+
+    # ── 因子信号 Tab ─────────────────────────────────────
+    with mf_tab2:
+        if mf_result.factor_scores is not None:
+            st.caption("综合评分 = 各因子信号 × IC权重 之和。正值越大表示该ETF越被看好。")
+            st.dataframe(mf_result.factor_scores.style.format("{:.3f}"), height=300)
+            sf = go.Figure()
+            for col in mf_result.factor_scores.columns:
+                display_name = _FACTOR_CN.get(col, col)
+                sf.add_trace(go.Scatter(
+                    x=mf_result.factor_scores.index, y=mf_result.factor_scores[col],
+                    name=display_name, mode="lines", line=dict(width=1),
+                ))
+            sf.update_layout(height=350, margin=dict(l=20, r=20, t=10, b=20), hovermode="x unified")
+            st.plotly_chart(sf, use_container_width=True)
+
+    # ── IC分析 Tab ───────────────────────────────────────
+    with mf_tab3:
+        st.caption("RankIC = 因子信号与下期收益的秩相关系数。为正表示因子有效预测收益，ICIR 衡量稳定性。")
+        if mf_result.factor_ics:
+            ic_data = {}
+            for name, ics in mf_result.factor_ics.items():
+                display_name = _FACTOR_CN.get(name, name)
+                ic_data[display_name] = {
+                    "Mean IC": ics.mean(),
+                    "ICIR": icir(ics),
+                    "Hit Rate": (ics > 0).mean(),
+                }
+            st.dataframe(pd.DataFrame(ic_data).style.format("{:.4f}"), use_container_width=True)
+            for name, ics in mf_result.factor_ics.items():
+                display_name = _FACTOR_CN.get(name, name)
+                with st.expander(f"{display_name} — IC走势"):
+                    ic_fig = go.Figure()
+                    ic_fig.add_trace(go.Scatter(
+                        x=ics.index, y=ics.values, name=f"{display_name} IC",
+                        line=dict(color="green", width=1), opacity=0.6,
+                    ))
+                    cum = ics.cumsum()
+                    ic_fig.add_trace(go.Scatter(
+                        x=cum.index, y=cum.values, name=f"{display_name} Cum IC",
+                        line=dict(color="darkgreen", width=2),
+                    ))
+                    ic_fig.update_layout(height=250, margin=dict(l=20, r=20, t=20, b=20), hovermode="x unified")
+                    st.plotly_chart(ic_fig, use_container_width=True)
+
+    # ── 分层回测 Tab ─────────────────────────────────────
+    with mf_tab4:
+        st.caption("将ETF按综合评分从低到高分为5层，L1=最不看好的组合，L5=最看好的组合。理想情况是L5 > L4 > ... > L1（单调递增）。")
+        if mf_result.factor_scores is not None:
+            close_px = loader.load_extended_prices(mf_universe)
+            close_px = close_px[close_px.index >= pd.Timestamp(mf_start)]
+            close_px = close_px[close_px.index <= pd.Timestamp(mf_end)]
+            fwd = close_px.pct_change(fill_method=None).shift(-1)
+
+            layers = layer_returns(mf_result.factor_scores, fwd, n_layers=5)
+            perf = layer_performance(layers)
+            st.dataframe(perf.style.format("{:.4f}"), use_container_width=True)
+
+            ly = go.Figure()
+            for layer in sorted(layers.keys()):
+                cl = (1 + layers[layer].fillna(0)).cumprod()
+                ly.add_trace(go.Scatter(x=cl.index, y=cl.values, name=f"Layer {layer}", mode="lines"))
+            ly.update_layout(height=400, margin=dict(l=20, r=20, t=10, b=20), hovermode="x unified")
+            st.plotly_chart(ly, use_container_width=True)
+
+    st.stop()
 
 # Re-sync group list after edits
 group_names = list(cfg["groups"].keys())
