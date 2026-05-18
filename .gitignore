@@ -16,3 +16,6 @@ dist/
 
 *.iml
 grid_*.csv
+
+# Cache
+cache/
