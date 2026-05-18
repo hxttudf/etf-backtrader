@@ -933,6 +933,7 @@ if _mode == "网格交易":
     with sb_date_col1_g:
         grid_start = st.date_input("开始", value=pd.Timestamp(_grid_def("g_sd", "2026-01-01")),
                                     key="gs_start", format="YYYY-MM-DD",
+                                    max_value=pd.Timestamp.today(),
                                     max_value=pd.Timestamp.today())
     with sb_date_col2_g:
         grid_end = st.date_input("结束", value=pd.Timestamp(_grid_def("g_ed", pd.Timestamp.today().strftime("%Y-%m-%d"))),
