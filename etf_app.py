@@ -1713,7 +1713,7 @@ group_names = list(cfg["groups"].keys())
 if sel_group not in group_names:
     sel_group = "红纳创黄C" if "红纳创黄C" in group_names else group_names[0]
 
-_start_val = pd.Timestamp(_qp("start", "2025-04-30"))
+_start_val = min(pd.Timestamp(_qp("start", "2025-04-30")), pd.Timestamp.today())
 _end_val = pd.Timestamp(_qp("end", datetime.today().strftime("%Y-%m-%d")))
 
 st.sidebar.markdown("**回测日期**")
