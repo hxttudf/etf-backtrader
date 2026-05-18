@@ -1716,8 +1716,7 @@ _end_val = pd.Timestamp(_qp("end", datetime.today().strftime("%Y-%m-%d")))
 st.sidebar.markdown("**回测日期**")
 sb_date_col1, sb_date_col2 = st.sidebar.columns(2)
 with sb_date_col1:
-    start_date = st.date_input("开始", value=_start_val, key="sd_start", format="YYYY-MM-DD",
-                               max_value=pd.Timestamp.today())
+    start_date = st.date_input("开始", value=_start_val, key="sd_start", format="YYYY-MM-DD")
     start_date = pd.Timestamp(start_date)
 with sb_date_col2:
     end_date = st.date_input("结束", value=_end_val, key="sd_end", format="YYYY-MM-DD",
