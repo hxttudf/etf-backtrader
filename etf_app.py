@@ -1714,7 +1714,7 @@ if sel_group not in group_names:
     sel_group = "红纳创黄C" if "红纳创黄C" in group_names else group_names[0]
 
 _start_val = min(pd.Timestamp(_qp("start", "2025-04-30")), pd.Timestamp.today())
-_end_val = pd.Timestamp(_qp("end", datetime.today().strftime("%Y-%m-%d")))
+_end_val = pd.Timestamp.today()
 
 st.sidebar.markdown("**回测日期**")
 sb_date_col1, sb_date_col2 = st.sidebar.columns(2)
@@ -1735,7 +1735,7 @@ source = st.sidebar.selectbox("数据源", ["tencent", "akshare", "em"],
 source_hint = {"tencent": "⚠️ 仅约800交易日（~3年）", "akshare": "✅ 全历史(Sina+Tencent拼接，自ETF上市起)", "em": "✅ 前复权+开盘价（东方财富，不稳定）"}
 st.sidebar.caption(source_hint[source])
 ma_days = st.sidebar.slider("MA 均线天数", 10, 200, int(_qp("ma", "60")), step=5, key="sb_ma")
-roc_days = st.sidebar.slider("ROC 动量天数", 5, 120, int(_qp("roc", "20")), step=5, key="sb_roc")
+roc_days = st.sidebar.slider("ROC 动量天数", 5, 120, int(_qp("roc", "20")), step=1, key="sb_roc")
 delay = st.sidebar.slider("信号延迟 (天)", 0, 5, int(_qp("delay", "0")), step=1, key="sb_delay",
     help="0=当日收盘出信号即执行(收盘)或T+1开盘执行(开盘)。1=额外延迟1天(旧行为)")
 compare_all = st.sidebar.checkbox("对比所有组合", value=False,
