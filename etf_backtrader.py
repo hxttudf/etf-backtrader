@@ -1181,6 +1181,8 @@ def _convert_output(strat, prices, start_date, end_date, etf_names):
                         ret.iloc[i] -= COMM  # buy
                     break
 
+    nav = (1 + ret).cumprod()
+
     price_trim = (prices.index >= start_ts) & (prices.index <= end_ts)
     returns = prices.pct_change(fill_method=None)
     bench_ret = returns[price_trim].mean(axis=1)
