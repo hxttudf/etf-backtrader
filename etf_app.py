@@ -315,6 +315,15 @@ def calc_metrics(nav, ret):
     calmar = ann / abs(dd) if dd != 0 and ann > 0 else 0
     # 最大回撤日期: NAV跌至谷底的日期 (回撤最深的那天)
     max_dd_dt = dd_series.idxmin()
+    # 最大回撤区间: 峰值 → 谷底
+    _cummax = nav.cummax()
+    _cummax_shift = _cummax.shift(1)
+    _peak_mask = _cummax != _cummax_shift
+    _peak_mask.iloc[0] = True  # first day is always a peak
+    _peak_dates = _cummax[_peak_mask].index
+    _peak_before = _peak_dates[_peak_dates <= max_dd_dt]
+    max_dd_peak = _peak_before[-1] if len(_peak_before) > 0 else max_dd_dt
+    max_dd_range_dd = f"{max_dd_peak.strftime('%Y-%m-%d')} ~ {max_dd_dt.strftime('%Y-%m-%d')}"
     # 最长回撤持续: NAV连续低于历史峰值的最长天数
     longest_dd_days = 0
     longest_dd_start = None
@@ -367,7 +376,7 @@ def calc_metrics(nav, ret):
     loss_range = f"{longest_loss_start.strftime('%Y-%m-%d')} ~ {longest_loss_end.strftime('%Y-%m-%d')}" if longest_loss_start else "N/A"
     return {"累计收益": total, "年化收益": ann, "年化波动": vol, "夏普比率": sharpe,
             "最大回撤": dd, "最大回撤日期": max_dd_dt,
-            "最长回撤持续": longest_dd_days, "最长回撤区间": dd_range,
+            "最大回撤区间": max_dd_range_dd, "最长回撤持续": longest_dd_days, "最长回撤区间": dd_range,
             "卡尔玛比率": calmar, "最大亏损": max_loss,
             "最大亏损日期": max_loss_dt, "水下天数": underwater_days, "持有天数": holding_days,
             "最长亏损持续": longest_loss_days, "最长亏损区间": loss_range}
@@ -2224,7 +2233,7 @@ if run_btn:
                         cols[ci].metric(key, f"{sells}", help=metric_help.get(key))
                     elif key in ("持有天数", "水下天数", "最长亏损持续", "最长回撤持续"):
                         cols[ci].metric(key, f"{int(mm.get(key, 0))}", help=metric_help.get(key))
-                    elif key in ("最长亏损区间", "最长回撤区间"):
+                    elif key in ("最长亏损区间", "最长回撤区间", "最大回撤区间"):
                         cols[ci].metric(key, mm.get(key, "N/A"), help=metric_help.get(key))
                     elif key in ("最大亏损日期", "最大回撤日期"):
                         dt_val = mm.get(key)
@@ -2246,8 +2255,9 @@ if run_btn:
             "夏普比率": "(年化收益 - 无风险利率 3%) / 年化波动率，衡量风险调整后收益",
             "最大回撤": "策略净值从峰值到谷底的最大跌幅（峰值不一定是1.0）",
             "最大回撤日期": "回撤最深的具体交易日（净值跌至谷底的日期）",
+            "最大回撤区间": "最大回撤发生的起止日期（峰值 → 谷底）",
             "最长回撤持续": "净值连续低于历史峰值的最大交易日数（含持仓期和空仓期）",
-            "最长回撤区间": "最长连续回撤期的起止日期",
+            "最长回撤区间": "最长连续回撤期的起止日期（峰值 → 回到峰值上方）",
             "最大亏损": "策略净值相对本金(1.0)的最大亏损，衡量实际亏本金额度。下方显示最大亏损发生日期",
             "最大亏损日期": "最大亏损发生的具体交易日",
             "持有天数": "回测区间内的有效交易日总数",
@@ -2260,7 +2270,7 @@ if run_btn:
             "胜率": "获胜交易数÷总交易数，每笔买入→卖出记一次",
         }
         metric_keys = ["累计收益", "年化收益", "夏普比率", "最大回撤", "最大回撤日期",
-                       "最长回撤持续", "最长回撤区间",
+                       "最大回撤区间", "最长回撤持续", "最长回撤区间",
                        "最大亏损", "最大亏损日期", "水下天数", "最长亏损持续", "最长亏损区间",
                        "持有天数", "卡尔玛比率", "买入次数", "卖出次数", "胜率"]
         render_metrics(mm, trades, wr, buys, sells, metric_keys)
