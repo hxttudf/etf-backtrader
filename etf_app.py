@@ -2571,7 +2571,7 @@ if run_btn:
             gprices_full = all_prices[list(col_map.keys())].rename(columns=col_map).dropna(how="all")
             if len(gprices_full) == 0:
                 continue
-            gopen_full = all_open[list(col_map.keys())].rename(columns=col_map) if all_open is not None else None
+            gopen_full = all_open[list(col_map.keys())].rename(columns=col_map) if all_open is not None and exec_timing in ("T+1开盘", "T日开盘") else None
             gmidday = all_midday[list(col_map.keys())].rename(columns=col_map) if all_midday is not None else None
             gaft_open = all_aft_open[list(col_map.keys())].rename(columns=col_map) if all_aft_open is not None else None
 
