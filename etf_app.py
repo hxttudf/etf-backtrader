@@ -1816,9 +1816,9 @@ st.sidebar.header("🔄 数据管理")
 _cache_path = Path(__file__).parent / f"etf_prices_{source}.csv"
 _cache_open_path = Path(__file__).parent / f"etf_prices_{source}_open.csv"
 if _cache_path.exists():
-    from datetime import datetime as _dt_lib
-    _mtime = pd.Timestamp(_dt_lib.fromtimestamp(_cache_path.stat().st_mtime))
-    _now = pd.Timestamp.now()
+    from datetime import datetime as _dt_lib, timezone as _tz, timedelta as _td
+    _mtime = pd.Timestamp(_dt_lib.fromtimestamp(_cache_path.stat().st_mtime, tz=_tz(_td(hours=8))))
+    _now = pd.Timestamp.now(tz=_tz(_td(hours=8)))
     _ago = int((_now - _mtime).total_seconds() / 60)
     if _ago < 60:
         _time_str = f"{_ago} 分钟前"
