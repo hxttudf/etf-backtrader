@@ -1430,12 +1430,22 @@ if st.session_state.get("show_config", False):
         if c1.button("💾 保存", type="primary", width='stretch'):
             try:
                 parsed = json.loads(edited)
+                if not isinstance(parsed, dict):
+                    raise ValueError("配置必须是字典格式 {\"组合名\": {\"ETF名\": \"代码\", ...}}")
                 cfg["groups"] = parsed
-                with open(DEFAULT_CONFIG, "w") as f:
+                with open(DEFAULT_CONFIG, "w", encoding="utf-8") as f:
                     json.dump(cfg, f, ensure_ascii=False, indent=2)
-                st.success("已保存")
+                # 回读验证
+                _verify = json.loads(DEFAULT_CONFIG.read_text(encoding="utf-8"))
+                _saved_groups = _verify.get("groups", {})
+                if _saved_groups != parsed:
+                    st.error(f"写入验证失败: 文件内容不匹配 ({len(_saved_groups)} vs {len(parsed)} 个组合)")
+                else:
+                    st.success(f"已保存 {len(parsed)} 个组合 ✓")
             except json.JSONDecodeError as e:
                 st.error(f"JSON格式错误: {e}")
+            except Exception as e:
+                st.error(f"保存失败: {e}")
         if c2.button("↩ 撤销", width='stretch'):
             st.session_state.pop("cfg_json", None)
             st.rerun()
