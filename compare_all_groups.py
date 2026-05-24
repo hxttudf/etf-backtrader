@@ -11,14 +11,25 @@ from etf_backtest import run_backtest, trade_win_rate
 CFG = json.load(open(Path(__file__).parent / "etf_config.json"))
 GROUPS = CFG["groups"]
 
-# Build unique code set (name__code → code)
-all_unique: dict[str, str] = {}
+# Build unique code set
+all_codes: set[str] = set()
+for getfs in GROUPS.values():
+    all_codes.update(getfs.values())
+
+# Map each code to a unique column key: pick the first group's name for that code
+code_to_key: dict[str, str] = {}
+key_to_code: dict[str, str] = {}
 for gname, getfs in GROUPS.items():
     for name, code in getfs.items():
-        all_unique[f"{name}__{code}"] = code
+        if code not in code_to_key:
+            k = f"{name}__{code}"
+            code_to_key[code] = k
+            key_to_code[k] = code
 
-print(f"Loading prices for {len(all_unique)} unique codes...")
-all_prices = load_prices(all_unique, "_batch", source="akshare")
+print(f"Loading prices for {len(all_codes)} unique codes...")
+# Use a dict that load_prices can handle (name → code with simple names)
+_flat = {f"_{c}": c for c in all_codes}
+all_prices = load_prices(_flat, "_batch", source="akshare").rename(columns={f"_{c}": c for c in all_codes})
 print(f"Price data: {all_prices.shape[0]} days, {all_prices.shape[1]} codes")
 
 # Default backtest params
@@ -30,9 +41,13 @@ total = len(GROUPS)
 t0 = time.time()
 
 for idx, (gname, getfs) in enumerate(GROUPS.items()):
-    # Map unique column names back to group category names
+    codes_in_group = list(getfs.values())
+    # Rename code columns to name__code format for the group
+    rename_map = {code: f"{name}__{code}" for name, code in getfs.items()}
+    gprices = all_prices[codes_in_group].rename(columns=rename_map).dropna(how="all")
+    # Now map back: name__code → name
     col_map = {f"{name}__{code}": name for name, code in getfs.items()}
-    gprices = all_prices[list(col_map.keys())].rename(columns=col_map).dropna(how="all")
+    gprices = gprices.rename(columns=col_map)
 
     # Trim to lookback
     gprices = gprices[gprices.index >= LOOKBACK]
@@ -47,7 +62,7 @@ for idx, (gname, getfs) in enumerate(GROUPS.items()):
     start_str = actual_start.strftime("%Y-%m-%d")
 
     try:
-        nav, _, ret, _, trades, _, tdets = run_backtest(
+        nav, _, ret, _, trades, _, tdets, _ = run_backtest(
             gprices, "daily", start_str, end_date, MA, ROC)
     except Exception as e:
         continue

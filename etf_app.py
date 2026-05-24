@@ -2560,12 +2560,10 @@ if run_btn:
         compare_rows = []
 
         # Load all unique ETF codes once (not per-group), then slice in-memory.
-        # Use unique keys (name__code) since different groups may use different codes
-        # for the same category name (e.g., "红利低波"→512890 vs "红利低波"→515080).
         all_unique: dict[str, str] = {}
         for getfs in all_groups.values():
             for name, code in getfs.items():
-                all_unique[f"{name}__{code}"] = code
+                all_unique[code] = code
         all_prices = cached_prices(all_unique, "_all", source=source)
         all_prices = all_prices[all_prices.index >= lookback]
         all_open = cached_open_prices(all_unique, "_all", source=source) if use_backtrader else None
@@ -2576,8 +2574,7 @@ if run_btn:
 
         group_data = {}
         for gname, getfs in all_groups.items():
-            # Map unique column names back to group's category names
-            col_map = {f"{name}__{code}": name for name, code in getfs.items()}
+            col_map = {code: name for name, code in getfs.items()}
             gprices_full = all_prices[list(col_map.keys())].rename(columns=col_map).dropna(how="all")
             if len(gprices_full) == 0:
                 continue

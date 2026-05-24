@@ -80,6 +80,11 @@ def run_backtest(prices: pd.DataFrame, mode: str, start_date: str, end_date: str
     for i in range(ma_days, len(prices)):
         dt = prices.index[i]
 
+        # Clean start: reset position on first bar in backtest range
+        if not started_in_range and start_ts <= dt <= end_ts:
+            holding = None
+            started_in_range = True
+
         # ── Step 1: compute signal from close[i] ──
         should_check = True if mode == "daily" else is_friday[i]
         if should_check:
