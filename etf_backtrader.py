@@ -238,13 +238,11 @@ class MOCRotation(bt.Strategy):
         self._ma = self.p.ma_df
         self._roc = self.p.roc_df
         self._signal_by_bar = {}  # bar index → computed signal
-        self._prev_signal = None  # last computed signal (persists on non-check bars)
+        self._prev_signal = None  # carried forward on non-check bars
 
     def next(self):
         dt = self.datas[0].datetime.datetime(0)
         dt_ts = pd.Timestamp(dt)
-        self._daily_holding.append((dt, self._holding))
-        self._daily_value.append((dt, self.broker.getvalue()))
 
         # Clean start: reset holding on first bar in backtest range
         if self.p.start_date and not self._started_in_range:
@@ -254,6 +252,9 @@ class MOCRotation(bt.Strategy):
                 self._holding = None
                 self._last_trade_bar = -999
                 self._started_in_range = True
+
+        self._daily_holding.append((dt, self._holding))
+        self._daily_value.append((dt, self.broker.getvalue()))
 
         should_check = (
             self.p.rebalance_mode == 'daily' or dt.weekday() == 4
@@ -286,10 +287,10 @@ class MOCRotation(bt.Strategy):
             name = d._name
             roc_val = self._roc[name].get(dt_ts, np.nan) if self._roc is not None and name in self._roc.columns else np.nan
             sig_record[name] = float(roc_val) if not np.isnan(roc_val) else None
-        sig_record['holding'] = self._holding  # will be updated after trade
+            sig_record['holding'] = self._holding  # will be updated after trade
         self._daily_signals.append(sig_record)
 
-        if effective_signal is not None and effective_signal != self._holding \
+        if effective_signal != self._holding \
                 and bar - self._last_trade_bar >= self.p.min_hold:
             _execute_trade(self, dt, effective_signal)
             # Update sig_record holding to post-trade state
@@ -335,8 +336,6 @@ class MOORotation(bt.Strategy):
 
     def next(self):
         dt = self.datas[0].datetime.datetime(0)
-        self._daily_holding.append((dt, self._holding))
-        self._daily_value.append((dt, self.broker.getvalue()))
 
         # Clean start: reset holding on first bar in backtest range
         if self.p.start_date and not self._started_in_range:
@@ -345,6 +344,9 @@ class MOORotation(bt.Strategy):
             if sd <= dt <= ed:
                 self._holding = None
                 self._started_in_range = True
+
+        self._daily_holding.append((dt, self._holding))
+        self._daily_value.append((dt, self.broker.getvalue()))
 
         should_check = (
             self.p.rebalance_mode == 'daily' or dt.weekday() == 4
@@ -394,7 +396,7 @@ class MOORotation(bt.Strategy):
         src_bar = bar - 1 - delay
         effective_signal = self._signal_by_bar.get(src_bar)
 
-        if effective_signal is not None and effective_signal != self._holding \
+        if effective_signal != self._holding \
                 and bar - self._last_trade_bar >= self.p.min_hold:
             _execute_trade(self, dt, effective_signal)
             # Update sig_record holding to post-trade state
@@ -1165,22 +1167,6 @@ def _convert_output(strat, prices, start_date, end_date, etf_names):
     nav = nav / nav.iloc[0]
 
     ret = nav.pct_change().fillna(0.0)
-
-    # Apply commission to match manual engine (broker commission normalized away)
-    COMM = 0.0001; STAMP = 0.0005
-    trade_dates_set = {pd.Timestamp(t[0]) for t in strat._trade_log}
-    for i in range(len(ret)):
-        dt = ret.index[i]
-        if dt in trade_dates_set:
-            # Find matching trade
-            for tdt, told, tnew in strat._trade_log:
-                if pd.Timestamp(tdt) == dt:
-                    if told is not None:
-                        ret.iloc[i] -= COMM + STAMP  # sell
-                    if tnew is not None:
-                        ret.iloc[i] -= COMM  # buy
-                    break
-
     nav = (1 + ret).cumprod()
 
     price_trim = (prices.index >= start_ts) & (prices.index <= end_ts)
@@ -1201,7 +1187,7 @@ def _convert_output(strat, prices, start_date, end_date, etf_names):
 # 回测入口 — 对外暴露的回测接口，与 etf_app.py 对接
 # ═══════════════════════════════════════════════════════════
 
-def run_backtest_bt(prices, mode, start_date, end_date, ma_days=60, roc_days=25, min_hold=0,
+def run_backtest_bt(prices, mode, start_date, end_date, ma_days=60, roc_days=20, min_hold=0,
                     strategy='moc', open_prices=None, exec_mode='moc', delay=0):
     """回测接口。Backtrader 引擎 — 信号和收益与原手动引擎 100% 一致。
 
@@ -1221,9 +1207,6 @@ def run_backtest_bt(prices, mode, start_date, end_date, ma_days=60, roc_days=25,
 
     # Slice data from start_date (Backtrader has no old positions)
     prices_bt = prices[(prices.index >= start_ts) & (prices.index <= end_ts)]
-    if len(prices_bt) < ma_days:
-        # short period: use full data but will trim output
-        prices_bt = prices[prices.index >= start_ts - pd.Timedelta(days=5*365)]
 
     # Pre-compute MA/ROC on FULL data, then align to BT range
     ma_full, roc_full, _ = _calc(prices, ma_days, roc_days)
@@ -1244,6 +1227,15 @@ def run_backtest_bt(prices, mode, start_date, end_date, ma_days=60, roc_days=25,
             return (nav, bench_nav, ret, bench_ret, trades, trade_dates, trade_details,
                     daily_signals, None, holding_map, strat_nav, trade_details)
         raise RuntimeError("Manual run_backtest not available for MOO fallback")
+
+    # Forward non-moc/non-moo strategies to _setup_cerebro
+    if strategy not in ('moc', 'moo'):
+        cerebro = _setup_cerebro(prices, mode, ma_days, roc_days, min_hold, strategy,
+                                 open_prices=open_prices, exec_mode=exec_mode,
+                                 start_date=start_date, end_date=end_date)
+        results = cerebro.run()
+        _strat = results[0]
+        return _convert_output(_strat, prices_bt, start_date, end_date, etf_names)
 
     # MOC: Backtrader coc with date-indexed pre-computed MA/ROC. Verified.
     cerebro = bt.Cerebro()
@@ -1292,18 +1284,6 @@ def position_dist_bt(prices, start_date, end_date, mode, ma_days=60, roc_days=25
         strat_nav = nav_raw[(nav_raw.index >= start_ts) & (nav_raw.index <= end_ts)]
         if len(strat_nav) > 0:
             strat_nav = strat_nav / strat_nav.iloc[0]
-        COMM = 0.0001; STAMP = 0.0005
-        trade_dates_set = {pd.Timestamp(t[0]) for t in trade_log}
-        for i in range(1, len(strat_nav)):
-            dt = strat_nav.index[i]
-            if dt in trade_dates_set:
-                for tdt, told, tnew in trade_log:
-                    if pd.Timestamp(tdt) == dt:
-                        if told is not None:
-                            strat_nav.iloc[i:] *= (1 - COMM - STAMP)
-                        if tnew is not None:
-                            strat_nav.iloc[i:] *= (1 - COMM)
-                        break
     elif strat_nav is not None and holding_map is not None:
         # MOO: use pre-computed data from manual engine
         trade_log = trade_log or []
@@ -1323,18 +1303,6 @@ def position_dist_bt(prices, start_date, end_date, mode, ma_days=60, roc_days=25
         strat_nav = nav_raw[(nav_raw.index >= start_ts) & (nav_raw.index <= end_ts)]
         if len(strat_nav) > 0:
             strat_nav = strat_nav / strat_nav.iloc[0]
-        COMM = 0.0001; STAMP = 0.0005
-        trade_dates_set = {pd.Timestamp(t[0]) for t in trade_log}
-        for i in range(1, len(strat_nav)):
-            dt = strat_nav.index[i]
-            if dt in trade_dates_set:
-                for tdt, told, tnew in trade_log:
-                    if pd.Timestamp(tdt) == dt:
-                        if told is not None:
-                            strat_nav.iloc[i:] *= (1 - COMM - STAMP)
-                        if tnew is not None:
-                            strat_nav.iloc[i:] *= (1 - COMM)
-                        break
 
     COMMISSION_RATE = 0.0001 + 0.0005
 

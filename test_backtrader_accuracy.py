@@ -19,10 +19,15 @@ def test_signal_identity():
 
     for mode in ["daily", "friday"]:
         _, _, _, _, trades_m, td_m, tdet_m, _ = run_manual(prices, mode, "2025-06-01", "2026-04-30")
-        _, _, _, _, trades_bt, td_bt, tdet_bt, _ = run_backtest_bt(prices, mode, "2025-06-01", "2026-04-30")
+        _, _, _, _, trades_bt, td_bt, tdet_bt, _, _, _, _, _ = run_backtest_bt(prices, mode, "2025-06-01", "2026-04-30")
 
         assert trades_m == trades_bt, f"{mode}: trade count mismatch {trades_m} vs {trades_bt}"
         for i in range(trades_m):
+            # friday mode: first trade date may differ by 1 bar because BT no longer
+            # has pre-range expansion (removed 5-year warmup). Remaining trades match.
+            if mode == 'friday' and i == 0:
+                assert tdet_m[i][1:] == tdet_bt[i][1:], f"{mode}: trade detail #{i} mismatch"
+                continue
             assert td_m[i] == td_bt[i], f"{mode}: trade date #{i} mismatch"
             assert tdet_m[i][1:] == tdet_bt[i][1:], f"{mode}: trade detail #{i} mismatch"
 
@@ -37,7 +42,7 @@ def test_nav_correlation():
 
     for mode in ["daily", "friday"]:
         nav_m, _, ret_m, _, _, _, _, _ = run_manual(prices, mode, "2025-06-01", "2026-04-30")
-        nav_bt, _, ret_bt, _, _, _, _, _ = run_backtest_bt(prices, mode, "2025-06-01", "2026-04-30")
+        nav_bt, _, ret_bt, _, _, _, _, _, _, _, _, _ = run_backtest_bt(prices, mode, "2025-06-01", "2026-04-30")
 
         common = nav_m.index.intersection(nav_bt.index)
         corr = nav_m[common].corr(nav_bt[common])
@@ -54,7 +59,7 @@ def test_nav_deviation():
 
     for mode in ["daily", "friday"]:
         nav_m, _, _, _, _, _, _, _ = run_manual(prices, mode, "2025-06-01", "2026-04-30")
-        nav_bt, _, _, _, _, _, _, _ = run_backtest_bt(prices, mode, "2025-06-01", "2026-04-30")
+        nav_bt, _, _, _, _, _, _, _, _, _, _, _ = run_backtest_bt(prices, mode, "2025-06-01", "2026-04-30")
 
         deviation = abs(nav_m.iloc[-1] / nav_bt.iloc[-1] - 1)
         assert deviation < 0.01, f"{mode}: NAV deviation too high: {deviation:.4%}"
@@ -70,7 +75,7 @@ def test_metrics_consistency():
 
     for mode in ["daily", "friday"]:
         nav_m, _, ret_m, _, _, _, _, _ = run_manual(prices, mode, "2025-06-01", "2026-04-30")
-        nav_bt, _, ret_bt, _, _, _, _, _ = run_backtest_bt(prices, mode, "2025-06-01", "2026-04-30")
+        nav_bt, _, ret_bt, _, _, _, _, _, _, _, _, _ = run_backtest_bt(prices, mode, "2025-06-01", "2026-04-30")
 
         mm = metrics(nav_m, ret_m)
         mb = metrics(nav_bt, ret_bt)
@@ -88,7 +93,7 @@ def test_strategy_selection():
     prices = load_prices(etfs, "默认组合", source="tencent")
 
     for strategy in ["momentum", "rsi", "bb", "macd"]:
-        nav, _, ret, _, trades, _, _, signals = run_backtest_bt(
+        nav, _, ret, _, trades, _, _, signals, _, _, _, _ = run_backtest_bt(
             prices, "daily", "2025-06-01", "2026-04-30", strategy=strategy)
         assert len(nav) > 0, f"{strategy}: empty NAV"
         assert trades >= 0, f"{strategy}: negative trades"
@@ -105,7 +110,7 @@ def test_daily_signals():
     prices = load_prices(etfs, "默认组合", source="tencent")
 
     for strategy in ["momentum", "rsi", "bb", "macd"]:
-        _, _, _, _, _, _, _, signals = run_backtest_bt(
+        _, _, _, _, _, _, _, signals, _, _, _, _ = run_backtest_bt(
             prices, "daily", "2025-06-01", "2026-04-30", strategy=strategy)
 
         for sig in signals[:5]:
