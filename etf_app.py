@@ -783,10 +783,8 @@ if _mode == "网格交易":
         st.error("网格交易模块 (etf_grid.py) 导入失败")
         st.stop()
     # ═══════════════════════════════════════════════════════
-    # 网格交易参数（支持 URL query params 持久化）
+    # 网格交易参数（从本地 JSON 配置文件加载默认值）
     # ═══════════════════════════════════════════════════════
-    gq = st.query_params
-    # 从 JSON 配置文件加载默认值（URL params 优先级更高）
     _grid_file_cfg = {}
     if GRID_CONFIG_PATH.exists():
         try:
@@ -794,9 +792,7 @@ if _mode == "网格交易":
         except Exception:
             _grid_file_cfg = {}
     def _grid_def(k: str, default):
-        """先从 URL 读，再从 JSON 读，最后用默认值"""
-        if k in gq and gq[k] not in ("NaT", ""):
-            return gq[k]
+        """从 JSON 配置文件读取，若无则用默认值"""
         if k in _grid_file_cfg:
             return _grid_file_cfg[k]
         return default
@@ -991,15 +987,7 @@ if _mode == "网格交易":
                                    help="成交偏差。流动性好的ETF设0.001（0.1%）",
                                    key="g_slip_inp")
 
-    st.query_params.update({
-        "g_sym": grid_sym_sel, "g_period": grid_period, "g_src": grid_source,
-        "g_tt": grid_trigger_type, "g_sell": str(sell_threshold), "g_ps": str(pullback_sell),
-        "g_buy": str(buy_threshold), "g_bb": str(bounce_buy),
-        "g_amt": str(grid_amount), "g_tcap": str(grid_trade_cap),
-        "g_init": str(grid_init_amount),
-        "g_sd": str(grid_start), "g_ed": str(grid_end),
-        "g_comm": str(comm), "g_slip": str(slip),
-    })
+    pass  # params persisted to JSON via "保存网格配置" button above
 
     run_grid_btn = st.sidebar.button("🚀 运行网格回测", type="primary", width='stretch')
     if st.sidebar.button("💾 保存配置", width='stretch',
@@ -1395,14 +1383,12 @@ if _mode == "网格交易":
 # ── 双动量轮动 ──────────────────────────────────────────
 st.sidebar.header("📊 回测参数")
 
-# ── Restore from URL query params (survives browser refresh) ──
-qp = st.query_params
-# 从 JSON 配置文件加载默认值（URL params 优先级更高）
+# ── Restore from local JSON config ──
 _momentum_file_cfg = {}
 if MOMENTUM_CONFIG_PATH.exists():
     try: _momentum_file_cfg = json.loads(MOMENTUM_CONFIG_PATH.read_text())
     except Exception: pass
-_qp = lambda k, d: qp[k] if k in qp and qp[k] not in ("NaT", "") else (_momentum_file_cfg.get(k, d) if k in _momentum_file_cfg else d)
+_qp = lambda k, d: _momentum_file_cfg.get(k, d) if k in _momentum_file_cfg else d
 
 
 # Group selector + config button
@@ -1792,13 +1778,7 @@ if st.session_state.get("_cfg_sig") != _cfg_sig:
     st.session_state.pop("_bt_cached", None)
 st.session_state["_cfg_sig"] = _cfg_sig
 
-# ── Persist to URL query params (survives F5 refresh) ──
-st.query_params.update({
-    "g": sel_group, "start": str(start_date), "end": str(end_date),
-    "mode": mode, "src": source, "ma": str(ma_days), "roc": str(roc_days),
-    "stg": strategy,
-    "delay": str(delay),
-})
+# ── Params persisted to JSON via "保存动量配置" button below ──
 
 if st.sidebar.button("💾 保存动量配置", width='stretch',
                      help="保存当前参数到 etf_momentum_config.json，远程部署适用"):
