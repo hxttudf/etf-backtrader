@@ -25,10 +25,6 @@ plt.rcParams["axes.unicode_minus"] = False
 from etf_data import DEFAULT_CONFIG, calc_indicators, load_config, load_prices, load_prices_extended
 from etf_backtrader import run_backtest_bt, position_dist_bt, STRATEGIES
 
-COMMISSION = 0.0001  # 万1 per side, 免五
-STAMP_DUTY = 0.0005  # 印花税 0.05%, 卖出时收取
-
-
 def _safe_loc(df, col, dt, fallback_prices, i):
     """Get df[col].loc[dt] safely, falling back to prev close if dt not in index."""
     if col is not None and col in df.columns and dt in df.index:
@@ -46,7 +42,8 @@ def run_backtest(prices: pd.DataFrame, mode: str, start_date: str, end_date: str
                  open_prices: pd.DataFrame | None = None,
                  midday_prices: pd.DataFrame | None = None,
                  afternoon_open_prices: pd.DataFrame | None = None,
-                 delay: int = 0):
+                 delay: int = 0,
+                 commission: float = 0.0001, stamp_duty: float = 0.0005):
     """mode: 'daily' | 'friday'  → (nav, bench_nav, ret, bench_ret, trades, trade_dates, trade_details)
 
     信号在 T 日收盘判定，T+1 执行。
@@ -132,9 +129,9 @@ def run_backtest(prices: pd.DataFrame, mode: str, start_date: str, end_date: str
                             mid_px = midday_prices[holding].loc[mid_key]
                             if not np.isnan(prev_close) and prev_close > 0:
                                 strat_ret.iloc[i] = mid_px / prev_close - 1
-                            strat_ret.iloc[i] -= COMMISSION + STAMP_DUTY
+                            strat_ret.iloc[i] -= commission + stamp_duty
                         if effective_signal is not None:
-                            strat_ret.iloc[i] -= COMMISSION
+                            strat_ret.iloc[i] -= commission
                         new_h = effective_signal
                         if new_h is not None:
                             aft_o = afternoon_open_prices[new_h].loc[aft_key]
@@ -146,16 +143,16 @@ def run_backtest(prices: pd.DataFrame, mode: str, start_date: str, end_date: str
                         if holding is not None:
                             r = returns[holding].iloc[i]
                             strat_ret.iloc[i] = r if not np.isnan(r) else 0.0
-                            strat_ret.iloc[i] -= COMMISSION + STAMP_DUTY
+                            strat_ret.iloc[i] -= commission + stamp_duty
                         if effective_signal is not None:
-                            strat_ret.iloc[i] -= COMMISSION
+                            strat_ret.iloc[i] -= commission
                 else:
                     if holding is not None:
                         r = returns[holding].iloc[i]
                         strat_ret.iloc[i] = r if not np.isnan(r) else 0.0
-                        strat_ret.iloc[i] -= COMMISSION + STAMP_DUTY
+                        strat_ret.iloc[i] -= commission + stamp_duty
                     if effective_signal is not None:
-                        strat_ret.iloc[i] -= COMMISSION
+                        strat_ret.iloc[i] -= commission
             elif _use_open and i > 0:
                 # T+1 open execution: overnight(old) + swap + intraday(new)
                 # Use .loc[dt] (not .iloc[i]) because open_prices may have different row count
@@ -164,9 +161,9 @@ def run_backtest(prices: pd.DataFrame, mode: str, start_date: str, end_date: str
                     today_open_old = _safe_loc(open_prices, holding, dt, prices, i)
                     if not np.isnan(prev_close) and not np.isnan(today_open_old) and prev_close > 0:
                         strat_ret.iloc[i] = today_open_old / prev_close - 1
-                    strat_ret.iloc[i] -= COMMISSION + STAMP_DUTY
+                    strat_ret.iloc[i] -= commission + stamp_duty
                 if effective_signal is not None:
-                    strat_ret.iloc[i] -= COMMISSION
+                    strat_ret.iloc[i] -= commission
                 new_h = effective_signal
                 if new_h is not None:
                     o = _safe_loc(open_prices, new_h, dt, prices, i)
@@ -179,9 +176,9 @@ def run_backtest(prices: pd.DataFrame, mode: str, start_date: str, end_date: str
                 if holding is not None:
                     r = returns[holding].iloc[i]
                     strat_ret.iloc[i] = r if not np.isnan(r) else 0.0
-                    strat_ret.iloc[i] -= COMMISSION + STAMP_DUTY
+                    strat_ret.iloc[i] -= commission + stamp_duty
                 if effective_signal is not None:
-                    strat_ret.iloc[i] -= COMMISSION
+                    strat_ret.iloc[i] -= commission
 
             if start_ts <= dt <= end_ts:
                 trades += 1
@@ -224,7 +221,8 @@ def metrics(nav: pd.Series, ret: pd.Series) -> dict:
 
 
 def position_dist(prices: pd.DataFrame, start_date: str, end_date: str, mode: str,
-                  ma_days: int = 60, roc_days: int = 20, min_hold: int = 0) -> tuple[dict, dict, dict, dict, dict]:
+                  ma_days: int = 60, roc_days: int = 20, min_hold: int = 0,
+                  commission: float = 0.0001, stamp_duty: float = 0.0005) -> tuple[dict, dict, dict, dict, dict]:
     """返回 (持有天数dict, 买入次数dict, 收益占比dict, 持有期累计收益dict, 上涨天数占比dict)"""
     import math
 
@@ -257,9 +255,9 @@ def position_dist(prices: pd.DataFrame, start_date: str, end_date: str, mode: st
                 if start_ts <= dt <= end_ts:
                     buys[signal] += 1
                     if holding is not None and holding in log_ret:
-                        log_ret[holding] += math.log(1 - (COMMISSION + STAMP_DUTY))
+                        log_ret[holding] += math.log(1 - (commission + stamp_duty))
                     if signal is not None:
-                        log_ret[signal] += math.log(1 - COMMISSION)
+                        log_ret[signal] += math.log(1 - commission)
                 last_trade_i = i
                 holding = signal
 
@@ -642,7 +640,7 @@ def main() -> None:
         all_metrics = {}
         for mode in modes:
             if args.backtrader:
-                nav, bnav, ret, bret, trades, trade_dates, trade_details, daily_signals = \
+                nav, bnav, ret, bret, trades, trade_dates, trade_details, daily_signals, _, _, _, _ = \
                     run_backtest_bt(prices_full, mode, args.start, args.end, args.ma, args.roc,
                                     strategy=args.strategy)
             else:

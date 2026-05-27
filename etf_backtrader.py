@@ -1109,7 +1109,8 @@ STRATEGIES = {
 # ═══════════════════════════════════════════════════════════
 
 def _setup_cerebro(prices, mode, ma_days, roc_days, min_hold=0, strategy='momentum',
-                   open_prices=None, exec_mode='moc', start_date=None, end_date=None):
+                   open_prices=None, exec_mode='moc', start_date=None, end_date=None,
+                   commission=0.0001, stamp_duty=0.0005):
     """创建并配置 Cerebro 实例
 
     exec_mode: 'moc' (broker.set_coc=True) 或 'moo' (cheat_on_open + broker.set_coo)
@@ -1122,7 +1123,9 @@ def _setup_cerebro(prices, mode, ma_days, roc_days, min_hold=0, strategy='moment
         cerebro.broker.set_coc(True)  # MOC: orders fill at same bar's close
 
     cerebro.broker.setcash(1_000_000.0)
-    cerebro.broker.addcommissioninfo(StampDutyCommission())
+    cerebro.broker.addcommissioninfo(StampDutyCommission(commission=commission, stamp_duty=stamp_duty))
+
+
 
     # Pre-compute MA/ROC with same function as manual engine
     ma_df, roc_df, _ = calc_indicators(prices, ma_days, roc_days)
@@ -1188,7 +1191,8 @@ def _convert_output(strat, prices, start_date, end_date, etf_names):
 # ═══════════════════════════════════════════════════════════
 
 def run_backtest_bt(prices, mode, start_date, end_date, ma_days=60, roc_days=20, min_hold=0,
-                    strategy='moc', open_prices=None, exec_mode='moc', delay=0):
+                    strategy='moc', open_prices=None, exec_mode='moc', delay=0,
+                    commission=0.0001, stamp_duty=0.0005):
     """回测接口。Backtrader 引擎 — 信号和收益与原手动引擎 100% 一致。
 
     核心设计:
@@ -1219,7 +1223,8 @@ def run_backtest_bt(prices, mode, start_date, end_date, ma_days=60, roc_days=20,
         _fn = _get_manual_bt()
         if _fn:
             result = _fn(prices, mode, start_date, end_date, ma_days, roc_days, min_hold,
-                         open_prices=open_prices, delay=delay)
+                         open_prices=open_prices, delay=delay,
+                         commission=commission, stamp_duty=stamp_duty)
             nav, bench_nav, ret, bench_ret, trades, trade_dates, trade_details, daily_signals = result
             # Build holding_map and NAV from manual engine for position_dist_bt
             holding_map = {pd.Timestamp(s['_dt']): s.get('holding') or 'CASH' for s in daily_signals}
@@ -1232,7 +1237,8 @@ def run_backtest_bt(prices, mode, start_date, end_date, ma_days=60, roc_days=20,
     if strategy not in ('moc', 'moo'):
         cerebro = _setup_cerebro(prices, mode, ma_days, roc_days, min_hold, strategy,
                                  open_prices=open_prices, exec_mode=exec_mode,
-                                 start_date=start_date, end_date=end_date)
+                                 start_date=start_date, end_date=end_date,
+                                 commission=commission, stamp_duty=stamp_duty)
         results = cerebro.run()
         _strat = results[0]
         return _convert_output(_strat, prices_bt, start_date, end_date, etf_names)
@@ -1241,7 +1247,7 @@ def run_backtest_bt(prices, mode, start_date, end_date, ma_days=60, roc_days=20,
     cerebro = bt.Cerebro()
     cerebro.broker.set_coc(True)
     cerebro.broker.setcash(1_000_000.0)
-    cerebro.broker.addcommissioninfo(StampDutyCommission())
+    cerebro.broker.addcommissioninfo(StampDutyCommission(commission=commission, stamp_duty=stamp_duty))
 
     for name in etf_names:
         data = _make_data_feed(prices_bt, name, ma_df=ma_bt, roc_df=roc_bt,
@@ -1264,7 +1270,8 @@ def run_backtest_bt(prices, mode, start_date, end_date, ma_days=60, roc_days=20,
 
 def position_dist_bt(prices, start_date, end_date, mode, ma_days=60, roc_days=25, min_hold=0,
                      strategy='moc', open_prices=None, exec_mode='moc',
-                     strat=None, strat_nav=None, holding_map=None, trade_log=None):
+                     strat=None, strat_nav=None, holding_map=None, trade_log=None,
+                     commission=0.0001, stamp_duty=0.0005):
     """与原 position_dist() 签名和返回值完全一致
 
     strat: Backtrader策略对象(MOC)。strat_nav/holding_map/trade_log: 手动引擎数据(MOO)。
@@ -1304,7 +1311,7 @@ def position_dist_bt(prices, start_date, end_date, mode, ma_days=60, roc_days=25
         if len(strat_nav) > 0:
             strat_nav = strat_nav / strat_nav.iloc[0]
 
-    COMMISSION_RATE = 0.0001 + 0.0005
+    COMMISSION_RATE = commission + stamp_duty
 
     days = {n: 0 for n in etf_names}
     days["CASH"] = 0
