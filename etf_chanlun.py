@@ -233,38 +233,35 @@ def plot_chanlun_echarts(cz: object, signals: pd.DataFrame | None = None,
     kline_data = []
     for bar in cz.bars_raw:
         kline_data.append({
-            "date": bar.dt.strftime("%Y-%m-%d %H:%M:%S"),
+            "dt": bar.dt.strftime("%Y-%m-%d %H:%M:%S"),
             "open": bar.open,
             "close": bar.close,
             "high": bar.high,
             "low": bar.low,
-            "volume": bar.vol,
+            "vol": bar.vol,
         })
 
     fx_data = []
     for fx in cz.fx_list:
         fx_data.append({
-            "date": fx.dt.strftime("%Y-%m-%d %H:%M:%S"),
+            "dt": fx.dt.strftime("%Y-%m-%d %H:%M:%S"),
             "fx": fx.fx,
             "mark": "G" if fx.mark == 1 else "D",
             "value": fx.fx,
         })
 
     bi_data = []
-    for bi in cz.bi_list:
+    for fx in cz.fx_list:
         bi_data.append({
-            "date": bi.fx_a.dt.strftime("%Y-%m-%d %H:%M:%S"),
-            "date2": bi.fx_b.dt.strftime("%Y-%m-%d %H:%M:%S"),
-            "high": bi.high,
-            "low": bi.low,
-            "direction": "up" if bi.direction == 1 else "down",
+            "dt": fx.dt.strftime("%Y-%m-%d %H:%M:%S"),
+            "bi": fx.fx,
         })
 
     bs_data = []
     if signals is not None and len(signals) > 0:
         for _, row in signals.iterrows():
             bs_data.append({
-                "date": row["时间"].strftime("%Y-%m-%d %H:%M:%S") if hasattr(row["时间"], "strftime") else str(row["时间"]),
+                "dt": row["时间"].strftime("%Y-%m-%d %H:%M:%S") if hasattr(row["时间"], "strftime") else str(row["时间"]),
                 "bs": row["信号"],
                 "price": row["价格"],
             })
