@@ -5,3 +5,5 @@ akshare
 backtrader
 plotly
 matplotlib
+scipy
+czsc
