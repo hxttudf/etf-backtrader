@@ -43,6 +43,11 @@ try:
     _HAS_MULTIFACTOR = True
 except ImportError:
     _HAS_MULTIFACTOR = False
+try:
+    import etf_chanlun as chanlun
+    _HAS_CHANLUN = True
+except ImportError:
+    _HAS_CHANLUN = False
 import datetime as _dt
 import json
 
@@ -772,6 +777,8 @@ if _HAS_GRID:
     _mode_options.append("网格交易")
 if _HAS_MULTIFACTOR:
     _mode_options.append("多因子轮动")
+if _HAS_CHANLUN:
+    _mode_options.append("缠论分析")
 _mode = st.sidebar.radio("模式", _mode_options, horizontal=True, key="app_mode")
 
 # ── Sidebar ──────────────────────────────────────────────
@@ -1709,6 +1716,124 @@ if _mode == "多因子轮动":
             ly.update_layout(height=400, margin=dict(l=20, r=20, t=10, b=20), hovermode="x unified")
             st.plotly_chart(ly, use_container_width=True)
 
+    st.stop()
+
+# ── 缠论分析 ──
+if _mode == "缠论分析":
+    _cl_cfg = chanlun.load_config()
+    _cl_defaults = {"code": _cl_cfg.get("code", "513100"), "source": _cl_cfg.get("source", "sina"),
+                    "freq": _cl_cfg.get("freq", "日线"), "max_bi": _cl_cfg.get("max_bi", 50),
+                    "chart": _cl_cfg.get("chart", "plotly")}
+
+    st.sidebar.header("📐 缠论参数")
+
+    sel_code = st.sidebar.text_input("标的代码", value=_cl_defaults["code"],
+                                      help="ETF 或个股代码，如 513100(纳指ETF)、000001(平安银行)")
+
+    cl_source = st.sidebar.selectbox("数据源", ["sina", "em"],
+                                     index=0 if _cl_defaults["source"] == "sina" else 1,
+                                     format_func=lambda x: {"sina": "AKShare (Sina)", "em": "东方财富"}[x])
+
+    today = pd.Timestamp.today()
+    saved_start = _cl_cfg.get("start", (today - pd.DateOffset(years=2)).strftime("%Y-%m-%d"))
+    cl_start = st.sidebar.date_input("开始日期", value=pd.Timestamp(saved_start),
+                                     max_value=today, key="cl_start")
+    saved_end = _cl_cfg.get("end", today.strftime("%Y-%m-%d"))
+    cl_end = st.sidebar.date_input("结束日期", value=pd.Timestamp(saved_end),
+                                   max_value=today, key="cl_end")
+
+    cl_freq = st.sidebar.selectbox("K线频率", ["日线", "周线", "月线"],
+                                   index=["日线", "周线", "月线"].index(_cl_defaults["freq"]))
+    cl_max_bi = st.sidebar.slider("最大笔数量", 10, 200, _cl_defaults["max_bi"], key="cl_max_bi")
+    cl_chart = st.sidebar.selectbox("图表风格", ["plotly", "TradingView"],
+                                    index=0 if _cl_defaults["chart"] == "plotly" else 1)
+
+    if st.sidebar.button("🚀 运行缠论分析", type="primary", use_container_width=True):
+        chanlun.save_config({
+            "code": sel_code, "source": cl_source, "freq": cl_freq,
+            "max_bi": cl_max_bi, "chart": cl_chart,
+            "start": cl_start.strftime("%Y-%m-%d"), "end": cl_end.strftime("%Y-%m-%d"),
+        })
+        with st.spinner(f"获取 {sel_code} 数据并运行缠论分析..."):
+            try:
+                df = chanlun.fetch_ohlc(sel_code,
+                                        start_date=cl_start.strftime("%Y-%m-%d"),
+                                        end_date=cl_end.strftime("%Y-%m-%d"),
+                                        source=cl_source)
+                if len(df) == 0:
+                    st.error(f"未获取到 {sel_code} 的数据")
+                    st.stop()
+
+                qc = chanlun.check_quality(df)
+                if any(qc.get(sel_code, {}).values()):
+                    with st.expander("⚠️ 数据质量问题", expanded=False):
+                        for k, v in qc.get(sel_code, {}).items():
+                            if v:
+                                st.warning(f"{k}: {v}")
+
+                cz = chanlun.run_chanlun(df, freq=cl_freq, max_bi=cl_max_bi)
+
+                signal_df = chanlun.generate_signals(cz)
+                bs_points = chanlun.extract_buy_sell_points(signal_df)
+
+                stats = chanlun.get_chanlun_stats(cz)
+
+                with st.expander("📖 缠论基础概念与交易指导", expanded=True):
+                    st.markdown("""
+| 概念 | 说明 | 交易意义 |
+|------|------|---------|
+| **分型** | K线局部顶/底转折点 | 顶分型+确认→见顶，底分型+确认→见底 |
+| **笔** | 相邻分型间的价格运动轨迹 | 向上笔持股，向下笔持币 |
+| **中枢** | 3笔重叠震荡区（蓝色区域） | 突破上沿回踩不破→买入，跌破下沿反弹不碰→卖出 |
+| **一买** | 下跌趋势底背驰形成的买入点 | 最安全的底部买入信号（需等确认） |
+| **二买** | 一买后回调不破底 | 次安全买点，趋势确认中 |
+| **三买** | 突破中枢后回踩不破上沿 | 趋势加速买点 |
+| **背驰** | MACD/价格背离 | 顶背驰=上涨力量衰竭，底背驰=下跌力量衰竭 |
+
+**操作要点：** 一买等底分型确认，二买/三买更稳健；多级别联立（如日线+周线）共振时胜率更高。
+                    """)
+
+                c1, c2, c3, c4, c5 = st.columns(5)
+                c1.metric("笔数量", stats["笔数量"])
+                c2.metric("分型数量", stats["分型数量"])
+                c3.metric("已完成笔", stats["已完成笔"])
+                c4.metric("K线数量", stats["K线数量"])
+                c5.metric("频率", stats["频率"])
+
+                if len(bs_points) > 0:
+                    buys = bs_points[bs_points["类型"].isin(["一买", "二买/卖", "三买/卖"])]
+                    if len(buys) > 0:
+                        st.success(f"🔔 发现买卖信号: {', '.join(buys['类型'].unique())}")
+
+                if cl_chart == "TradingView":
+                    html = chanlun.plot_chanlun_echarts(cz, signals=bs_points, title=f"{sel_code} {cl_freq}")
+                    st.components.v1.html(html, height=660)
+                else:
+                    fig = chanlun.plot_chanlun(cz)
+                    if len(bs_points) > 0:
+                        chanlun.plot_signals(fig, bs_points)
+                    zs_list = chanlun.get_zs_data(cz)
+                    if zs_list:
+                        chanlun.plot_zs(fig, zs_list)
+                    st.plotly_chart(fig, use_container_width=True)
+
+                if len(bs_points) > 0:
+                    with st.expander(f"🎯 买卖点明细（共 {len(bs_points)} 个）", expanded=False):
+                        st.dataframe(bs_points, hide_index=True, use_container_width=True)
+
+                if zs_list:
+                    zs_df = pd.DataFrame(zs_list)
+                    with st.expander(f"📦 中枢明细（共 {len(zs_list)} 个）", expanded=False):
+                        st.dataframe(zs_df, hide_index=True, use_container_width=True)
+
+                with st.expander("📋 笔明细（含力度/斜率/角度）", expanded=False):
+                    bi_df = chanlun.get_bi_data(cz)
+                    st.dataframe(bi_df, hide_index=True, use_container_width=True)
+
+            except Exception as e:
+                import traceback
+                st.error(f"缠论分析失败: {e}")
+                st.code(traceback.format_exc())
     st.stop()
 
 # Re-sync group list after edits
