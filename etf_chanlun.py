@@ -128,14 +128,13 @@ def extract_buy_sell_points(signal_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def plot_signals(fig: "plotly.graph_objs.Figure", signals: pd.DataFrame) -> None:
-    import numpy as np
     import plotly.graph_objects as go
     colors = {"一买": "red", "二买/卖": "orange", "三买/卖": "green", "背驰": "purple"}
     symbols_map = {"一买": "triangle-up", "二买/卖": "diamond", "三买/卖": "triangle-down", "背驰": "star"}
     for _, row in signals.iterrows():
         typ = row["信号"]
         fig.add_trace(go.Scatter(
-            x=[np.datetime64(row["时间"])], y=[row["价格"]],
+            x=[row["时间"]], y=[row["价格"]],
             mode="markers+text",
             marker=dict(symbol=symbols_map.get(typ, "circle"), size=12, color=colors.get(typ, "gray")),
             text=typ,
@@ -218,9 +217,86 @@ def plot_zs(fig: "plotly.graph_objs.Figure", zs_list: list[dict]) -> None:
 
 
 def plot_chanlun(cz: object) -> "plotly.graph_objs.Figure":
-    from czsc.utils.plotting.kline import plot_czsc_chart
-    kc = plot_czsc_chart(cz)
-    return kc.fig
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    df = pd.DataFrame([{"dt": b.dt, "open": b.open, "high": b.high,
+                         "low": b.low, "close": b.close, "vol": b.vol} for b in cz.bars_raw])
+
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
+                        row_heights=[0.6, 0.2, 0.2],
+                        vertical_spacing=0.04)
+    fig.update_xaxes(type="category")
+
+    # K-line
+    colors = {"inc": "rgba(255,80,80,0.9)", "dec": "rgba(0,180,80,0.9)"}
+    fig.add_trace(go.Candlestick(
+        x=df["dt"], open=df["open"], high=df["high"],
+        low=df["low"], close=df["close"],
+        increasing_line_color=colors["inc"], increasing_fillcolor=colors["inc"],
+        decreasing_line_color=colors["dec"], decreasing_fillcolor=colors["dec"],
+        name="", showlegend=False,
+    ), row=1, col=1)
+
+    # SMA
+    for period, color, width in [(5, "rgba(255,165,0,0.7)", 1),
+                                  (10, "rgba(100,149,237,0.7)", 1),
+                                  (20, "rgba(160,32,240,0.7)", 1)]:
+        ma = df["close"].rolling(period).mean()
+        fig.add_trace(go.Scatter(x=df["dt"], y=ma, mode="lines",
+                      line=dict(color=color, width=width),
+                      name=f"SMA{period}", showlegend=True), row=1, col=1)
+
+    # 分型
+    fx_dt = [fx.dt for fx in cz.fx_list if hasattr(fx, "dt")]
+    fx_val = [fx.fx for fx in cz.fx_list if hasattr(fx, "fx")]
+    if fx_dt:
+        fig.add_trace(go.Scatter(
+            x=fx_dt, y=fx_val, mode="markers+lines",
+            marker=dict(symbol="diamond", size=6, color="rgba(255,165,0,1)"),
+            line=dict(color="rgba(255,165,0,0.4)", width=1, dash="dot"),
+            name="分型", showlegend=True,
+        ), row=1, col=1)
+
+    # 笔
+    bi_x, bi_y = [], []
+    for bi in cz.bi_list:
+        bi_x.extend([bi.fx_a.dt, bi.fx_b.dt, None])
+        bi_y.extend([bi.fx_a.fx, bi.fx_b.fx, None])
+    if bi_x:
+        fig.add_trace(go.Scatter(
+            x=bi_x, y=bi_y, mode="lines",
+            line=dict(color="rgba(100,149,237,0.6)", width=2),
+            name="笔", showlegend=True,
+        ), row=1, col=1)
+
+    # Volume
+    bar_colors = [colors["inc"] if row["close"] >= row["open"] else colors["dec"]
+                  for _, row in df.iterrows()]
+    fig.add_trace(go.Bar(x=df["dt"], y=df["vol"], marker_color=bar_colors,
+                         name="成交量", showlegend=False), row=2, col=1)
+
+    # MACD
+    ema12 = df["close"].ewm(span=12).mean()
+    ema26 = df["close"].ewm(span=26).mean()
+    dif = ema12 - ema26
+    dea = dif.ewm(span=9).mean()
+    macd_bar = 2 * (dif - dea)
+    fig.add_trace(go.Scatter(x=df["dt"], y=dif, mode="lines",
+                  line=dict(color="rgba(255,165,0,0.8)", width=1.5),
+                  name="DIF", showlegend=True), row=3, col=1)
+    fig.add_trace(go.Scatter(x=df["dt"], y=dea, mode="lines",
+                  line=dict(color="rgba(100,149,237,0.8)", width=1.5),
+                  name="DEA", showlegend=True), row=3, col=1)
+    macd_colors = [colors["inc"] if v >= 0 else colors["dec"] for v in macd_bar]
+    fig.add_trace(go.Bar(x=df["dt"], y=macd_bar, marker_color=macd_colors,
+                         name="MACD", showlegend=False), row=3, col=1)
+
+    fig.update_layout(height=700, margin=dict(l=40, r=20, t=30, b=20),
+                      hovermode="x unified", dragmode="zoom")
+    fig.update_yaxes(showgrid=True, zeroline=False, row=1, col=1)
+    fig.update_xaxes(rangeslider_visible=False)
+    return fig
 
 
 def plot_chanlun_echarts(cz: object, signals: pd.DataFrame | None = None,
