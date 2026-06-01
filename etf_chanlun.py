@@ -128,13 +128,14 @@ def extract_buy_sell_points(signal_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def plot_signals(fig: "plotly.graph_objs.Figure", signals: pd.DataFrame) -> None:
+    import numpy as np
     import plotly.graph_objects as go
     colors = {"一买": "red", "二买/卖": "orange", "三买/卖": "green", "背驰": "purple"}
     symbols_map = {"一买": "triangle-up", "二买/卖": "diamond", "三买/卖": "triangle-down", "背驰": "star"}
     for _, row in signals.iterrows():
         typ = row["信号"]
         fig.add_trace(go.Scatter(
-            x=[str(row["时间"])], y=[row["价格"]],
+            x=[np.datetime64(row["时间"])], y=[row["价格"]],
             mode="markers+text",
             marker=dict(symbol=symbols_map.get(typ, "circle"), size=12, color=colors.get(typ, "gray")),
             text=typ,
@@ -203,12 +204,13 @@ def get_zs_data(cz: object) -> list[dict]:
 
 
 def plot_zs(fig: "plotly.graph_objs.Figure", zs_list: list[dict]) -> None:
+    import numpy as np
     import plotly.graph_objects as go
     for zs in zs_list:
         fig.add_shape(
             type="rect",
             y0=zs["中枢底(ZD)"], y1=zs["中枢顶(ZG)"],
-            x0=str(zs["起始"]), x1=str(zs["结束"]),
+            x0=np.datetime64(zs["起始"]), x1=np.datetime64(zs["结束"]),
             fillcolor="rgba(100, 149, 237, 0.15)",
             layer="below", line_width=0,
             xref="x", yref="y",

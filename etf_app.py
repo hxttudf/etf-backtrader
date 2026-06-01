@@ -1382,61 +1382,61 @@ if _mode == "网格交易":
 
 
 # ── 双动量轮动 ──────────────────────────────────────────
-st.sidebar.header("📊 回测参数")
+if _mode == "双动量轮动":
+    st.sidebar.header("📊 回测参数")
 
-# ── Restore from local JSON config ──
-_momentum_file_cfg = {}
-if MOMENTUM_CONFIG_PATH.exists():
-    try: _momentum_file_cfg = json.loads(MOMENTUM_CONFIG_PATH.read_text())
-    except Exception: pass
-_qp = lambda k, d: _momentum_file_cfg.get(k, d) if k in _momentum_file_cfg else d
+    # ── Restore from local JSON config ──
+    _momentum_file_cfg = {}
+    if MOMENTUM_CONFIG_PATH.exists():
+        try: _momentum_file_cfg = json.loads(MOMENTUM_CONFIG_PATH.read_text())
+        except Exception: pass
+    _qp = lambda k, d: _momentum_file_cfg.get(k, d) if k in _momentum_file_cfg else d
 
+    # Group selector + config button
+    col1, col2 = st.sidebar.columns([3, 1])
+    group_names = list(cfg["groups"].keys())
+    _default_group = "红纳创黄C" if "红纳创黄C" in group_names else group_names[0]
+    sel_group = col1.selectbox("组合", group_names,
+                             index=group_names.index(_qp("g", _default_group)) if _qp("g", _default_group) in group_names else 0,
+                             key="group_sel_v4")
+    with col2:
+        st.write(" ")
+        if st.button("⚙️", help="管理组合", width='stretch'):
+            st.session_state.show_config = not st.session_state.get("show_config", False)
 
-# Group selector + config button
-col1, col2 = st.sidebar.columns([3, 1])
-group_names = list(cfg["groups"].keys())
-_default_group = "红纳创黄C" if "红纳创黄C" in group_names else group_names[0]
-sel_group = col1.selectbox("组合", group_names,
-                         index=group_names.index(_qp("g", _default_group)) if _qp("g", _default_group) in group_names else 0,
-                         key="group_sel_v4")
-with col2:
-    st.write(" ")
-    if st.button("⚙️", help="管理组合", width='stretch'):
-        st.session_state.show_config = not st.session_state.get("show_config", False)
-
-# Group config expander
-if st.session_state.get("show_config", False):
-    with st.sidebar.expander("组合管理", expanded=True):
-        import json
-        raw = json.dumps(cfg["groups"], ensure_ascii=False, indent=2)
-        edited = st.text_area(
-            "直接编辑JSON", raw, height=300, key="cfg_json",
-            help="格式: {\"组合名\": {\"ETF名\": \"代码\", ...}}",
-        )
-        c1, c2 = st.columns(2)
-        if c1.button("💾 保存", type="primary", width='stretch'):
-            try:
-                parsed = json.loads(edited)
-                if not isinstance(parsed, dict):
-                    raise ValueError("配置必须是字典格式 {\"组合名\": {\"ETF名\": \"代码\", ...}}")
-                cfg["groups"] = parsed
-                with open(DEFAULT_CONFIG, "w", encoding="utf-8") as f:
-                    json.dump(cfg, f, ensure_ascii=False, indent=2)
-                # 回读验证
-                _verify = json.loads(DEFAULT_CONFIG.read_text(encoding="utf-8"))
-                _saved_groups = _verify.get("groups", {})
-                if _saved_groups != parsed:
-                    st.error(f"写入验证失败: 文件内容不匹配 ({len(_saved_groups)} vs {len(parsed)} 个组合)")
-                else:
-                    st.success(f"已保存 {len(parsed)} 个组合 ✓")
-            except json.JSONDecodeError as e:
-                st.error(f"JSON格式错误: {e}")
-            except Exception as e:
-                st.error(f"保存失败: {e}")
-        if c2.button("↩ 撤销", width='stretch'):
-            st.session_state.pop("cfg_json", None)
-            st.rerun()
-    st.stop()
+    # Group config expander
+    if st.session_state.get("show_config", False):
+        with st.sidebar.expander("组合管理", expanded=True):
+            import json
+            raw = json.dumps(cfg["groups"], ensure_ascii=False, indent=2)
+            edited = st.text_area(
+                "直接编辑JSON", raw, height=300, key="cfg_json",
+                help="格式: {\"组合名\": {\"ETF名\": \"代码\", ...}}",
+            )
+            c1, c2 = st.columns(2)
+            if c1.button("💾 保存", type="primary", width='stretch'):
+                try:
+                    parsed = json.loads(edited)
+                    if not isinstance(parsed, dict):
+                        raise ValueError("配置必须是字典格式 {\"组合名\": {\"ETF名\": \"代码\", ...}}")
+                    cfg["groups"] = parsed
+                    with open(DEFAULT_CONFIG, "w", encoding="utf-8") as f:
+                        json.dump(cfg, f, ensure_ascii=False, indent=2)
+                    # 回读验证
+                    _verify = json.loads(DEFAULT_CONFIG.read_text(encoding="utf-8"))
+                    _saved_groups = _verify.get("groups", {})
+                    if _saved_groups != parsed:
+                        st.error(f"写入验证失败: 文件内容不匹配 ({len(_saved_groups)} vs {len(parsed)} 个组合)")
+                    else:
+                        st.success(f"已保存 {len(parsed)} 个组合 ✓")
+                except json.JSONDecodeError as e:
+                    st.error(f"JSON格式错误: {e}")
+                except Exception as e:
+                    st.error(f"保存失败: {e}")
+            if c2.button("↩ 撤销", width='stretch'):
+                st.session_state.pop("cfg_json", None)
+                st.rerun()
+        st.stop()
 
 if _mode == "多因子轮动":
     if not _HAS_MULTIFACTOR:
