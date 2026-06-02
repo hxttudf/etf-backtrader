@@ -57,6 +57,7 @@ st.set_page_config(page_title="ETF双动量轮动", layout="wide")
 GRID_CONFIG_PATH = Path(__file__).parent / "etf_grid_config.json"
 GRID_SYMBOLS_PATH = Path(__file__).parent / "etf_grid_symbols.json"
 MOMENTUM_CONFIG_PATH = Path(__file__).parent / "etf_momentum_config.json"
+MA_SYMBOLS_PATH = Path(__file__).parent / "etf_ma_symbols.json"
 
 st.markdown("""
 <style>
@@ -775,6 +776,7 @@ cfg = st.session_state.cfg
 _mode_options = ["双动量轮动"]
 if _HAS_CHANLUN:
     _mode_options.append("缠论分析")
+_mode_options.append("MACD/MA信号")
 _mode = st.sidebar.radio("模式", _mode_options, horizontal=True, key="app_mode")
 
 # ── Sidebar ──────────────────────────────────────────────
@@ -1718,7 +1720,7 @@ if _mode == "多因子轮动":
 if _mode == "缠论分析":
     _cl_cfg = chanlun.load_config()
     _cl_defaults = {"code": _cl_cfg.get("code", "513100"), "source": _cl_cfg.get("source", "sina"),
-                    "freq": _cl_cfg.get("freq", "日线"), "max_bi": _cl_cfg.get("max_bi", 50),
+                    "freq": _cl_cfg.get("freq", "日线"),
                     "chart": _cl_cfg.get("chart", "plotly")}
 
     st.sidebar.header("📐 缠论参数")
@@ -1741,17 +1743,16 @@ if _mode == "缠论分析":
     cl_freq = st.sidebar.selectbox("K线频率", ["日线", "周线", "月线"],
                                    index=["日线", "周线", "月线"].index(_cl_defaults["freq"]),
                                    key="cl_freq")
-    cl_max_bi = st.sidebar.slider("最大笔数量", 10, 200, _cl_defaults["max_bi"], key="cl_max_bi")
     cl_chart = st.sidebar.selectbox("图表风格", ["plotly", "TradingView"],
                                     index=0 if _cl_defaults["chart"] == "plotly" else 1,
                                     key="cl_chart")
 
-    _cl_cache_key = f"{sel_code}_{cl_source}_{cl_freq}_{cl_max_bi}_{cl_start}_{cl_end}"
+    _cl_cache_key = f"{sel_code}_{cl_source}_{cl_freq}_{cl_start}_{cl_end}"
 
     if st.sidebar.button("🚀 运行缠论分析", type="primary", use_container_width=True):
         chanlun.save_config({
             "code": sel_code, "source": cl_source, "freq": cl_freq,
-            "max_bi": cl_max_bi, "chart": cl_chart,
+            "chart": cl_chart,
             "start": cl_start.strftime("%Y-%m-%d"), "end": cl_end.strftime("%Y-%m-%d"),
         })
         with st.spinner(f"获取 {sel_code} 数据并运行缠论分析..."):
@@ -1765,17 +1766,11 @@ if _mode == "缠论分析":
                     st.error(f"未获取到 {sel_code} 的数据")
                     st.stop()
 
-                cz = chanlun.run_chanlun(df, freq=cl_freq, max_bi=cl_max_bi)
-                signal_df = chanlun.generate_signals(cz)
-                bs_points = chanlun.extract_buy_sell_points(signal_df)
-                stats = chanlun.get_chanlun_stats(cz)
-                zs_list = chanlun.get_zs_data(cz)
-                bi_df = chanlun.get_bi_data(cz)
+                multi = chanlun.run_multi_freq_analysis(df)
 
                 st.session_state.cl_results = {
                     "cache_key": _cl_cache_key,
-                    "df": df, "cz": cz, "bs_points": bs_points,
-                    "stats": stats, "zs_list": zs_list, "bi_df": bi_df,
+                    "df": df, "multi": multi,
                 }
             except Exception as e:
                 import traceback
@@ -1786,11 +1781,13 @@ if _mode == "缠论分析":
     _cl_res = st.session_state.get("cl_results")
     if _cl_res is not None and _cl_res.get("cache_key") == _cl_cache_key:
         df = _cl_res["df"]
-        cz = _cl_res["cz"]
-        bs_points = _cl_res["bs_points"]
-        stats = _cl_res["stats"]
-        zs_list = _cl_res["zs_list"]
-        bi_df = _cl_res["bi_df"]
+        multi = _cl_res["multi"]
+        cl_day = multi["日线"]
+        cz = cl_day["cz"]
+        bs_points = cl_day["bs"]
+        stats = cl_day["stats"]
+        zs_list = cl_day["zs"]
+        bi_df = chanlun.get_bi_data(cz)
 
         qc = chanlun.check_quality(df)
         if any(v for v in qc.values() if isinstance(v, dict)):
@@ -1820,24 +1817,33 @@ if _mode == "缠论分析":
         c5.metric("频率", stats["频率"])
 
         if len(bs_points) > 0:
-            buys = bs_points[bs_points["类型"].isin(["一买", "二买/卖", "三买/卖"])]
+            buys = bs_points[bs_points["信号"].isin(["一买", "二买", "三买"])]
             if len(buys) > 0:
-                st.success(f"🔔 发现买卖信号: {', '.join(buys['类型'].unique())}")
+                st.success(f"🔔 发现买卖信号: {', '.join(buys['信号'].unique())}")
 
         if cl_chart == "TradingView":
             html = chanlun.plot_chanlun_echarts(cz, signals=bs_points, title=f"{sel_code} {cl_freq}")
             st.components.v1.html(html, height=660)
         else:
-            fig = chanlun.plot_chanlun(cz)
-            if len(bs_points) > 0:
-                chanlun.plot_signals(fig, bs_points)
-            if zs_list:
-                chanlun.plot_zs(fig, zs_list)
-            st.plotly_chart(fig, use_container_width=True)
+            tabs = st.tabs(["📈 日线", "📈 周线", "📈 月线"])
+            for tab, freq in zip(tabs, ["日线", "周线", "月线"]):
+                with tab:
+                    data = multi[freq]
+                    st.plotly_chart(data["fig"], use_container_width=True)
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("笔数量", data["stats"]["笔数量"])
+                    c2.metric("K线数量", data["stats"]["K线数量"])
+                    c3.metric("中枢", len(data["zs"]))
+                    c4.metric("买卖信号", len(data["bs"]))
+                    if len(data["bs"]) > 0:
+                        with st.expander(f"买卖点明细 ({len(data['bs'])}个)"):
+                            st.dataframe(data["bs"], hide_index=True, use_container_width=True)
 
-        if len(bs_points) > 0:
-            with st.expander(f"🎯 买卖点明细（共 {len(bs_points)} 个）", expanded=False):
-                st.dataframe(bs_points, hide_index=True, use_container_width=True)
+            resonance = multi.get("resonance")
+            if resonance is not None and len(resonance) > 0:
+                st.success(f"🔔 发现 {len(resonance)} 个多级别共振信号！")
+                with st.expander("🎯 共振买卖点", expanded=True):
+                    st.dataframe(resonance, hide_index=True, use_container_width=True)
 
         if zs_list:
             zs_df = pd.DataFrame(zs_list)
@@ -1846,6 +1852,171 @@ if _mode == "缠论分析":
 
         with st.expander("📋 笔明细（含力度/斜率/角度）", expanded=False):
             st.dataframe(bi_df, hide_index=True, use_container_width=True)
+
+        if len(bs_points) > 0:
+            with st.expander("📊 信号回测（日线信号，close 成交，仅做多）", expanded=False):
+                bt = chanlun.backtest_signals(bs_points, df)
+                c1, c2, c3, c4, c5 = st.columns(5)
+                c1.metric("总收益率", f"{bt['总收益率']}%")
+                c2.metric("年化收益率", f"{bt['年化收益率']}%")
+                c3.metric("最大回撤", f"{bt['最大回撤']}%")
+                c4.metric("交易次数", bt["交易次数"])
+                c5.metric("胜率", f"{bt['胜率']}%")
+                if len(bt["交易明细"]) > 0:
+                    _td = bt["交易明细"].copy()
+                    _td["买入时间"] = _td["买入时间"].dt.strftime("%Y-%m-%d")
+                    _td["卖出时间"] = _td["卖出时间"].dt.strftime("%Y-%m-%d")
+                    _td["收益率"] = _td["收益率"].apply(lambda x: f"{x:.1f}%")
+                    st.dataframe(_td, hide_index=True, use_container_width=True)
+
+    st.stop()
+
+# ── MACD/MA信号分析 ──
+if _mode == "MACD/MA信号":
+    _macfg = chanlun.load_config()
+    _ma_defaults = {"code": _macfg.get("code", "513100"), "source": _macfg.get("source", "sina")}
+
+    st.sidebar.header("📐 MACD/MA参数")
+
+    # 标的列表（可扩展）
+    if "ma_symbols" not in st.session_state:
+        _default_symbols = [
+            ("513100", "纳指"), ("159941", "纳指"),
+            ("510050", "上证50"), ("159915", "创业板"),
+            ("588000", "科创50"), ("512880", "证券ETF"),
+            ("518880", "黄金ETF"), ("513500", "标普500"),
+            ("000001", "平安银行"), ("601933", "永辉超市"),
+            ("510300", "沪深300"), ("510500", "中证500"),
+        ]
+        if MA_SYMBOLS_PATH.exists():
+            try:
+                _saved = json.loads(MA_SYMBOLS_PATH.read_text())
+                st.session_state.ma_symbols = [(k, v) for k, v in _saved.items()]
+            except Exception:
+                st.session_state.ma_symbols = _default_symbols
+        else:
+            st.session_state.ma_symbols = _default_symbols
+    ma_sym_list = [f"{sym} ({name})" for sym, name in st.session_state.ma_symbols]
+    _ma_saved = _macfg.get("code", "513100")
+    default_sym_idx = 0
+    for idx, item in enumerate(ma_sym_list):
+        if item.startswith(_ma_saved + " "):
+            default_sym_idx = idx
+            break
+
+    ma_sym_sel = st.sidebar.selectbox("标的", ma_sym_list, index=default_sym_idx,
+                                      key="ma_sym_sel",
+                                      help="输入文字搜索，支持键盘上下选择")
+    sel_code = ma_sym_sel.split("(")[0].strip()
+
+    with st.sidebar.expander("📝 管理标的", expanded=False):
+        _sym_json = json.dumps(dict(st.session_state.ma_symbols), ensure_ascii=False, indent=2)
+        _new_json = st.text_area("{\"代码\": \"名称\"}", _sym_json, height=200, key="ma_sym_json")
+        if st.button("💾 保存到列表", use_container_width=True):
+            try:
+                _parsed = json.loads(_new_json)
+                st.session_state.ma_symbols = [(k, v) for k, v in _parsed.items()]
+                MA_SYMBOLS_PATH.write_text(_new_json, encoding="utf-8")
+                st.session_state.pop("ma_sym_json", None)
+                st.session_state["_ma_msg"] = f"✅ 已保存 {len(st.session_state.ma_symbols)} 个标的"
+            except json.JSONDecodeError as e:
+                st.session_state["_ma_msg"] = f"❌ JSON 格式错误: {e}"
+            except Exception as e:
+                st.session_state["_ma_msg"] = f"❌ 保存失败: {e}"
+            st.rerun()
+        _ma_msg = st.session_state.pop("_ma_msg", None)
+        if _ma_msg:
+            if _ma_msg.startswith("✅"):
+                st.success(_ma_msg)
+            else:
+                st.error(_ma_msg)
+
+    ma_source = st.sidebar.selectbox("数据源", ["sina", "em"],
+                                      index=0 if _ma_defaults["source"] == "sina" else 1,
+                                      format_func=lambda x: {"sina": "AKShare (Sina)", "em": "东方财富"}[x])
+
+    today = pd.Timestamp.today()
+    saved_start = _macfg.get("start", (today - pd.DateOffset(years=2)).strftime("%Y-%m-%d"))
+    ma_start = st.sidebar.date_input("开始日期", value=pd.Timestamp(saved_start),
+                                      max_value=today, key="ma_start")
+    saved_end = _macfg.get("end", today.strftime("%Y-%m-%d"))
+    ma_end = st.sidebar.date_input("结束日期", value=pd.Timestamp(saved_end),
+                                    max_value=today, key="ma_end")
+
+    _res_days = _macfg.get("resonance_days", "3")
+    resonance_val = st.sidebar.slider("信号共振确认天数", 0, 10,
+                                       int(_res_days) if _res_days not in (None, "") else 3,
+                                       key="resonance",
+                                       help="0=禁用。金叉与背驰在此天数内同时出现才视为有效信号")
+    _wk = _macfg.get("weekly_filter", "0")
+    weekly_val = st.sidebar.checkbox("周线金叉参与共振", value=_wk == "1",
+                                     key="weekly_filter",
+                                     help="周线MA5/MA10金叉/死叉加入共振池，与日线信号配对")
+
+    _ma_cache_key = f"ma_{sel_code}_{ma_source}_{ma_start}_{ma_end}_rd{resonance_val}_wk{int(weekly_val)}"
+
+    if st.sidebar.button("🚀 运行MACD/MA分析", type="primary", use_container_width=True):
+        chanlun.save_config({
+            "code": sel_code, "source": ma_source,
+            "start": ma_start.strftime("%Y-%m-%d"), "end": ma_end.strftime("%Y-%m-%d"),
+            "resonance_days": str(resonance_val),
+            "weekly_filter": "1" if weekly_val else "0",
+        })
+        with st.spinner(f"获取 {sel_code} 数据并运行技术分析..."):
+            try:
+                df = chanlun.fetch_ohlc(sel_code,
+                                        start_date=ma_start.strftime("%Y-%m-%d"),
+                                        end_date=ma_end.strftime("%Y-%m-%d"),
+                                        source=ma_source)
+                if len(df) == 0:
+                    st.session_state.pop("ma_results", None)
+                    st.error(f"未获取到 {sel_code} 的数据")
+                    st.stop()
+
+                ma_res = chanlun.ta_signal_analysis(df, resonance_days=resonance_val, weekly_filter=weekly_val)
+                st.session_state.ma_results = {"cache_key": _ma_cache_key, "df": df, "ma_res": ma_res}
+            except Exception as e:
+                import traceback
+                st.session_state.pop("ma_results", None)
+                st.error(f"MACD/MA分析失败: {e}")
+                st.code(traceback.format_exc())
+
+    _ma_res = st.session_state.get("ma_results")
+    if _ma_res is not None and _ma_res.get("cache_key") == _ma_cache_key:
+        df = _ma_res["df"]
+        ma_res = _ma_res["ma_res"]
+        sig = ma_res["signals"]
+
+        if len(sig) > 0:
+            bt = ma_res["backtest"]
+            st.markdown("### 📊 信号回测")
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.metric("总收益率", f"{bt['总收益率']}%")
+            c2.metric("年化收益率", f"{bt['年化收益率']}%")
+            c3.metric("最大回撤", f"{bt['最大回撤']}%")
+            c4.metric("交易次数", bt["交易次数"])
+            c5.metric("胜率", f"{bt['胜率']}%")
+            if len(bt["交易明细"]) > 0:
+                _td = bt["交易明细"].copy()
+                for _c in ["买入时间", "卖出时间"]:
+                    if _c in _td.columns:
+                        _td[_c] = _td[_c].dt.strftime("%Y-%m-%d")
+                _td["收益率"] = _td["收益率"].apply(lambda x: f"{x:.1f}%")
+                st.dataframe(_td, hide_index=True, use_container_width=True)
+            st.divider()
+
+            st.plotly_chart(ma_res["fig"], use_container_width=True)
+            cnt = sig["信号"].value_counts()
+            ccols = st.columns(len(cnt))
+            for col, (sig_name, n) in zip(ccols, cnt.items()):
+                col.metric(sig_name, n)
+
+            with st.expander(f"信号明细 ({len(sig)}个)", expanded=False):
+                _disp = sig[["时间", "信号", "价格"]].copy()
+                _disp["时间"] = _disp["时间"].dt.strftime("%Y-%m-%d")
+                st.dataframe(_disp, hide_index=True, use_container_width=True)
+        else:
+            st.info("未检测到符合条件的买卖信号")
 
     st.stop()
 

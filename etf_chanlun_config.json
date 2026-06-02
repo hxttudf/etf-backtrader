@@ -1,8 +1,8 @@
 {
-  "code": "000001",
+  "code": "601933",
   "source": "sina",
-  "freq": "日线",
-  "max_bi": 30,
-  "start": "2024-01-01",
-  "end": "2024-06-01"
+  "start": "2023-07-01",
+  "end": "2026-06-02",
+  "resonance_days": "3",
+  "weekly_filter": "1"
 }
