@@ -225,6 +225,9 @@ class MOCRotation(bt.Strategy):
         ('ma_df', None),
         ('roc_df', None),
         ('delay', 0),
+        ('crash_sigma', None),    # None=disabled; float=σ threshold for crash filter
+        ('crash_std_window', 20), # rolling std window for crash filter
+        ('returns_df', None),     # pre-computed daily returns for crash check
     )
 
     def __init__(self):
@@ -259,6 +262,7 @@ class MOCRotation(bt.Strategy):
         should_check = (
             self.p.rebalance_mode == 'daily' or dt.weekday() == 4
         )
+        crash_excluded = set()
         if should_check:
             above = {}
             for d in self.datas:
@@ -269,6 +273,17 @@ class MOCRotation(bt.Strategy):
                 ma_val = self._ma[name].get(dt_ts, np.nan) if self._ma is not None and name in self._ma.columns else np.nan
                 roc_val = self._roc[name].get(dt_ts, np.nan) if self._roc is not None and name in self._roc.columns else np.nan
                 if not np.isnan(ma_val) and px > ma_val and not np.isnan(roc_val):
+                    if self.p.crash_sigma is not None and self.p.returns_df is not None:
+                        idx_pos = self.p.returns_df.index.get_loc(dt_ts) if dt_ts in self.p.returns_df.index else -1
+                        win = self.p.crash_std_window
+                        if idx_pos >= win:
+                            ret_t = self.p.returns_df[name].iloc[idx_pos]
+                            if not np.isnan(ret_t):
+                                rw = self.p.returns_df[name].iloc[idx_pos-win+1:idx_pos+1]
+                                stdw = rw.std()
+                                if stdw > 0 and ret_t < -self.p.crash_sigma * stdw:
+                                    crash_excluded.add(name)
+                                    continue
                     above[name] = roc_val
             self._prev_signal = max(above, key=above.get) if above else None
 
@@ -287,7 +302,8 @@ class MOCRotation(bt.Strategy):
             name = d._name
             roc_val = self._roc[name].get(dt_ts, np.nan) if self._roc is not None and name in self._roc.columns else np.nan
             sig_record[name] = float(roc_val) if not np.isnan(roc_val) else None
-            sig_record['holding'] = self._holding  # will be updated after trade
+        sig_record['crash_excluded'] = list(crash_excluded) if should_check and crash_excluded else []
+        sig_record['holding'] = self._holding  # will be updated after trade
         self._daily_signals.append(sig_record)
 
         if effective_signal != self._holding \
@@ -1192,7 +1208,8 @@ def _convert_output(strat, prices, start_date, end_date, etf_names):
 
 def run_backtest_bt(prices, mode, start_date, end_date, ma_days=60, roc_days=20, min_hold=0,
                     strategy='moc', open_prices=None, exec_mode='moc', delay=0,
-                    commission=0.0001, stamp_duty=0.0005):
+                    commission=0.0001, stamp_duty=0.0005,
+                    crash_sigma=None, crash_std_window=20):
     """回测接口。Backtrader 引擎 — 信号和收益与原手动引擎 100% 一致。
 
     核心设计:
@@ -1224,7 +1241,8 @@ def run_backtest_bt(prices, mode, start_date, end_date, ma_days=60, roc_days=20,
         if _fn:
             result = _fn(prices, mode, start_date, end_date, ma_days, roc_days, min_hold,
                          open_prices=open_prices, delay=delay,
-                         commission=commission, stamp_duty=stamp_duty)
+                         commission=commission, stamp_duty=stamp_duty,
+                         crash_sigma=crash_sigma, crash_std_window=crash_std_window)
             nav, bench_nav, ret, bench_ret, trades, trade_dates, trade_details, daily_signals = result
             # Build holding_map and NAV from manual engine for position_dist_bt
             holding_map = {pd.Timestamp(s['_dt']): s.get('holding') or 'CASH' for s in daily_signals}
@@ -1254,10 +1272,15 @@ def run_backtest_bt(prices, mode, start_date, end_date, ma_days=60, roc_days=20,
                                open_prices=open_prices)
         cerebro.adddata(data)
 
+    # Pre-compute returns for crash filter if enabled
+    returns_df = None
+    if crash_sigma is not None:
+        returns_df = prices.pct_change(fill_method=None)
     strat_cls = MOCRotation if exec_mode == 'moc' else MOORotation
     strat_kwargs = dict(etf_names=etf_names, rebalance_mode=mode, min_hold=min_hold,
                         ma_df=ma_full, roc_df=roc_full, start_date=start_ts, end_date=end_ts,
-                        delay=delay)
+                        delay=delay, crash_sigma=crash_sigma, crash_std_window=crash_std_window,
+                        returns_df=returns_df)
     cerebro.addstrategy(strat_cls, **strat_kwargs)
     results = cerebro.run()
     strat = results[0]

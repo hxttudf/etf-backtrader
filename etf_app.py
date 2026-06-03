@@ -127,7 +127,8 @@ def _safe_loc(df, col, dt, fallback_prices, i):
 def run_backtest(prices, mode, start_date, end_date, ma_days, roc_days, min_hold=0,
                  open_prices=None, midday_prices=None, afternoon_open_prices=None,
                  delay=0, use_open_signal=False,
-                 commission=0.0001, stamp_duty=0.0005):
+                 commission=0.0001, stamp_duty=0.0005,
+                 crash_sigma=None, crash_std_window=20):
     """Inline backtest so the app stays self-contained.
 
     信号在 T 日收盘判定，T+1 执行。
@@ -135,6 +136,8 @@ def run_backtest(prices, mode, start_date, end_date, ma_days, roc_days, min_hold
     - open_prices: T+1 开盘执行 (信号 T日close → 执行 T+1日open)
     - midday + afternoon_open: 中午执行 (信号 T-1日close → 执行 T日中午)
     - delay: 信号延迟天数 (0=同日/次日, 1=额外延迟1天, 即当前旧行为)
+    - crash_sigma: 暴跌过滤σ阈值, None=关闭, 正数=过滤当日跌幅超过σ×std的标的
+    - crash_std_window: 滚动标准差窗口, 默认20日
     """
     start_date = pd.Timestamp(start_date)
     end_date = pd.Timestamp(end_date)
@@ -176,6 +179,7 @@ def run_backtest(prices, mode, start_date, end_date, ma_days, roc_days, min_hold
 
         # ── Step 1: compute signal ──
         should_check = True if mode == "daily" else is_friday[i]
+        crash_excluded = set()
         if should_check:
             above = {}
             for name in etf_names:
@@ -194,6 +198,13 @@ def run_backtest(prices, mode, start_date, end_date, ma_days, roc_days, min_hold
                     ma = ma60[name].iloc[i]
                     roc = roc20[name].iloc[i]
                 if not pd.isna(ma) and not pd.isna(px) and px > ma and not pd.isna(roc):
+                    if crash_sigma is not None and i >= crash_std_window:
+                        ret_t = returns[name].iloc[i]
+                        if not pd.isna(ret_t):
+                            std = returns[name].iloc[i-crash_std_window+1:i+1].std()
+                            if std > 0 and ret_t < -crash_sigma * std:
+                                crash_excluded.add(name)
+                                continue
                     above[name] = roc
             signal_hist[i] = max(above, key=above.get) if above else None
         else:
@@ -291,6 +302,7 @@ def run_backtest(prices, mode, start_date, end_date, ma_days, roc_days, min_hold
             else:
                 roc_v = roc20[name].iloc[i]
             sig_record[name] = float(roc_v) if not pd.isna(roc_v) else None
+        sig_record['crash_excluded'] = list(crash_excluded) if should_check and crash_excluded else []
         sig_record['holding'] = holding  # post-execution holding
         daily_signals.append(sig_record)
 
@@ -541,7 +553,8 @@ def trade_win_rate(ret, trade_details, prices):
 
 def grid_search(prices, modes, start, end, ma_values, roc_values, progress_bar,
                 open_prices=None, midday_prices=None, afternoon_open_prices=None,
-                delay=0, use_open_signal=False):
+                delay=0, use_open_signal=False,
+                crash_sigma=None, crash_std_window=20):
     """网格搜索最优MA/ROC，返回所有结果DataFrame"""
     import itertools
 
@@ -555,7 +568,8 @@ def grid_search(prices, modes, start, end, ma_values, roc_values, progress_bar,
                 open_prices=open_prices,
                 midday_prices=midday_prices,
                 afternoon_open_prices=afternoon_open_prices,
-                delay=delay, use_open_signal=use_open_signal)
+                delay=delay, use_open_signal=use_open_signal,
+                crash_sigma=crash_sigma, crash_std_window=crash_std_window)
             m = calc_metrics(nav, ret)
             wr = trade_win_rate(ret, trade_details, prices)
             rows.append({
@@ -2063,6 +2077,15 @@ stamp_duty = st.sidebar.number_input("印花税率（万分之五=0.0005）", 0.
 compare_all = st.sidebar.checkbox("对比所有组合", value=False,
     help="同时回测所有已配置组合，并排对比关键指标")
 
+use_crash_filter = st.sidebar.checkbox("💥 暴跌过滤（σ阈值）", value=_qp("crash", "False") == "True", key="sb_crash",
+    help="启用后，当日跌幅超过历史波动率N倍σ的标的不参与轮动")
+crash_sigma = st.sidebar.slider("暴跌σ阈值", 1.0, 4.0, float(_qp("crash_sigma", "2.6")), step=0.1, key="sb_crash_sigma",
+    help="当日跌幅超过滚动收益率的N倍标准差时排除该标的。2.6=约0.5%误报率",
+    disabled=not use_crash_filter)
+crash_window = st.sidebar.slider("σ滚动窗口", 5, 120, int(_qp("crash_win", "51")), step=1, key="sb_crash_win",
+    help="计算滚动标准差的天数。窗口越大σ越稳定但反应越慢。51日为最优",
+    disabled=not use_crash_filter)
+
 _btn_clicked = st.sidebar.button("🚀 开始回测", type="primary", width='stretch')
 run_btn = _btn_clicked or ("_bt_cached" in st.session_state)
 exec_timing = st.sidebar.selectbox("执行时机",
@@ -2090,7 +2113,7 @@ strategy = st.sidebar.selectbox("策略", list(STRATEGIES.keys()),
     help="仅 Backtrader 引擎支持多策略")
 
 # 配置变化时清除缓存，下次需要重新点击回测
-_cfg_sig = (sel_group, str(start_date), str(end_date), mode, exec_timing, use_backtrader, ma_days, roc_days, delay, commission, stamp_duty)
+_cfg_sig = (sel_group, str(start_date), str(end_date), mode, exec_timing, use_backtrader, ma_days, roc_days, delay, commission, stamp_duty, use_crash_filter, crash_sigma, crash_window)
 if st.session_state.get("_cfg_sig") != _cfg_sig:
     st.session_state.pop("_bt_cached", None)
 st.session_state["_cfg_sig"] = _cfg_sig
@@ -2104,6 +2127,8 @@ if st.sidebar.button("💾 保存动量配置", width='stretch',
         "mode": mode, "src": source, "ma": str(ma_days), "roc": str(roc_days),
         "stg": strategy, "delay": str(delay),
         "comm": str(commission), "stamp": str(stamp_duty),
+        "crash": str(use_crash_filter), "crash_sigma": str(crash_sigma),
+        "crash_win": str(crash_window),
     }
     MOMENTUM_CONFIG_PATH.write_text(json.dumps(config_data, ensure_ascii=False, indent=2))
     st.sidebar.success("✅ 动量配置已保存")
@@ -2208,13 +2233,13 @@ with st.sidebar.expander("⏰ 实操指南"):
     )
 
 def _strategy_signal_for_date(prices, target_date, strategy, ma_days=60, roc_days=20,
-                              open_prices=None):
-    """计算指定策略在指定日期的信号和指标值"""
+                              open_prices=None, crash_sigma=None, crash_std_window=20):
+    """计算指定策略在指定日期的信号和指标值，返回 (best, df, actual_dt, crash_excluded)"""
     dt = pd.Timestamp(target_date)
     if dt not in prices.index:
         available = prices.index[prices.index <= dt]
         if len(available) == 0:
-            return None, None, None
+            return None, None, None, []
         dt = available[-1]
 
     prev_dt = prices.index[prices.index < dt]
@@ -2223,6 +2248,8 @@ def _strategy_signal_for_date(prices, target_date, strategy, ma_days=60, roc_day
     p = prices.ffill()
     rows = []
     candidates = {}
+    crash_excluded = []
+    returns = prices.pct_change(fill_method=None)
 
     for name in prices.columns:
         px = float(prices[name].loc[dt]) if dt in prices.index else float('nan')
@@ -2236,6 +2263,7 @@ def _strategy_signal_for_date(prices, target_date, strategy, ma_days=60, roc_day
             row["开盘价"] = None
 
         row["收盘价"] = px
+        row["暴跌排除"] = ""
 
         if prev_dt is not None and prev_dt in prices.index:
             prev_px = prices[name].loc[prev_dt]
@@ -2252,7 +2280,21 @@ def _strategy_signal_for_date(prices, target_date, strategy, ma_days=60, roc_day
             row[f"MA{ma_days}"] = ma
             row[f"ROC{roc_days}"] = roc
             if is_valid and not pd.isna(ma) and px > ma and not pd.isna(roc):
-                candidates[name] = roc
+                _crash_excluded = False
+                if crash_sigma is not None and dt in returns.index:
+                    idx_pos = returns.index.get_loc(dt)
+                    win = crash_std_window
+                    if idx_pos >= win:
+                        ret_t = returns[name].iloc[idx_pos]
+                        if not pd.isna(ret_t):
+                            rw = returns[name].iloc[idx_pos-win+1:idx_pos+1]
+                            stdw = rw.std()
+                            if stdw > 0 and ret_t < -crash_sigma * stdw:
+                                crash_excluded.append(name)
+                                row["暴跌排除"] = "💥"
+                                _crash_excluded = True
+                if not _crash_excluded:
+                    candidates[name] = roc
         elif strategy == "rsi":
             delta = p[name].diff()
             gain = delta.clip(lower=0).ewm(alpha=1/14, min_periods=14).mean()
@@ -2337,6 +2379,14 @@ def _strategy_signal_for_date(prices, target_date, strategy, ma_days=60, roc_day
                               and r["收盘价"] > r[ma_col]) else "✗", axis=1)
     else:
         df["MA通过"] = "—"
+    # Insert 暴跌排除 column right after MA通过
+    cols = list(df.columns)
+    if "暴跌排除" in cols:
+        mai = cols.index("MA通过")
+        cols.remove("暴跌排除")
+        cols.insert(mai + 1, "暴跌排除")
+        df = df[cols]
+    df["暴跌排除"] = df["暴跌排除"].apply(lambda v: v if v else "—")
 
     rank_cfg = {
         "momentum": (f"ROC{roc_days}", "desc"), "rsi": ("RSI(14)", "asc"),
@@ -2361,7 +2411,7 @@ def _strategy_signal_for_date(prices, target_date, strategy, ma_days=60, roc_day
     else:
         best = None
 
-    return best, df, dt
+    return best, df, dt, crash_excluded
 
 
 # ── Signal query (top of main area) ─────────────────────
@@ -2394,9 +2444,11 @@ if sig_btn:
                         else:
                             missing_etfs.append(name)
 
-        best, df, actual_dt = _strategy_signal_for_date(
+        best, df, actual_dt, crash_excluded = _strategy_signal_for_date(
             prices, sig_date_actual.strftime("%Y-%m-%d"), strategy, ma_days, roc_days,
-            open_prices=open_prices)
+            open_prices=open_prices,
+            crash_sigma=crash_sigma if use_crash_filter else None,
+            crash_std_window=crash_window if use_crash_filter else 20)
 
     if df is None:
         st.warning("数据不足，无法查询")
@@ -2427,6 +2479,10 @@ if sig_btn:
         else:
             st.warning("空仓")
 
+        if crash_excluded:
+            excl_str = ', '.join(f'{e}({etf_codes_map.get(e,"")})' for e in crash_excluded)
+            st.warning(f"💥 暴跌排除: {excl_str}")
+
         df["ETF"] = df["ETF"].apply(lambda n: f"{n} ({etf_codes_map.get(n, '')})")
         if "涨幅" in df.columns:
             df["涨幅"] = df["涨幅"].apply(lambda v: f"{v:+.2%}" if pd.notna(v) else "—")
@@ -2449,6 +2505,8 @@ if run_btn:
         open_full = cached_open_prices(etfs, sel_group, source=source)
         if open_full is not None:
             open_full = open_full[open_full.index >= lookback]
+        _crash_sigma = crash_sigma if use_crash_filter else None
+        _crash_window = crash_window if use_crash_filter else 20
         # Execution timing configuration
         _use_open_signal = (exec_timing == "T日开盘")  # T日开盘信号
         _exec_open = open_full if exec_timing in ("T+1开盘", "T日开盘") else None
@@ -2498,7 +2556,8 @@ if run_btn:
                     run_backtest_bt(prices_full, m, actual_start_str, end_str, ma_days, roc_days,
                                     strategy=bt_mode, open_prices=_exec_open,
                                     exec_mode=bt_mode, delay=delay,
-                                    commission=commission, stamp_duty=stamp_duty)
+                                    commission=commission, stamp_duty=stamp_duty,
+                                    crash_sigma=_crash_sigma, crash_std_window=_crash_window)
                 bt_strats[m] = bt_strat
                 bt_holdings[m] = bt_hmap
                 bt_navs[m] = bt_snav
@@ -2510,7 +2569,8 @@ if run_btn:
                                  midday_prices=_midday_prices,
                                  afternoon_open_prices=_afternoon_open_prices,
                                  delay=delay, use_open_signal=_use_open_signal,
-                                 commission=commission, stamp_duty=stamp_duty)
+                                 commission=commission, stamp_duty=stamp_duty,
+                                 crash_sigma=_crash_sigma, crash_std_window=_crash_window)
             metrics_dict = calc_metrics(nav, ret)
             bench_metrics = calc_metrics(bnav, bret)
             all_metrics[m] = (metrics_dict, bench_metrics, trades, ret, nav, bnav)
@@ -2826,6 +2886,11 @@ if run_btn:
                     row[f"{name} 收盘"] = ("▶" if name==buy_etf else "") + ("◀" if name==sell_etf else "") + (f" {cp}" if cp!="—" else "—")
                     row[f"{name} 开盘"] = open_px
                 row[f"{name} 涨幅"] = chg_str
+            ce = match.get('crash_excluded', [])
+            if ce:
+                row['暴跌排除'] = ', '.join(f'{e}({etf_codes.get(e,"")})' for e in ce)
+            else:
+                row['暴跌排除'] = ''
             sig_rows.append(row)
         sig_rows.reverse()  # show latest first
         if sig_rows:
@@ -2901,7 +2966,8 @@ if run_btn:
                         run_backtest_bt(gprices_full, m, gactual_str, end_str, ma_days, roc_days,
                                         strategy=bt_m, open_prices=gopen_full,
                                         exec_mode=bt_m, delay=delay,
-                                        commission=commission, stamp_duty=stamp_duty)
+                                        commission=commission, stamp_duty=stamp_duty,
+                                        crash_sigma=_crash_sigma, crash_std_window=_crash_window)
                 else:
                     gnav, gbnav, gret, gbret, gtrades, gtd, gtdets, _ = \
                         run_backtest(gprices_full, m, gactual_str, end_str, ma_days, roc_days,
@@ -2909,7 +2975,8 @@ if run_btn:
                                      midday_prices=gmidday,
                                      afternoon_open_prices=gaft_open,
                                      delay=delay, use_open_signal=_use_open_signal,
-                                     commission=commission, stamp_duty=stamp_duty)
+                                     commission=commission, stamp_duty=stamp_duty,
+                                     crash_sigma=_crash_sigma, crash_std_window=_crash_window)
                 gm = calc_metrics(gnav, gret)
                 gwr = trade_win_rate(gret, gtdets, gprices_full)
                 rows.append({
@@ -2966,7 +3033,8 @@ if run_btn:
                                  open_prices=_exec_open,
                                  midday_prices=_midday_prices,
                                  afternoon_open_prices=_afternoon_open_prices,
-                                 delay=delay, use_open_signal=_use_open_signal)
+                                 delay=delay, use_open_signal=_use_open_signal,
+                                 crash_sigma=_crash_sigma, crash_std_window=_crash_window)
             status.update(label=f"完成 {total_combo} 种组合", state="complete")
 
         # ── Result table per mode ──
