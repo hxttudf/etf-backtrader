@@ -201,6 +201,54 @@ def run_backtest(prices: pd.DataFrame, mode: str, start_date: str, end_date: str
     return nav, bench_nav, ret, bench_ret, trades, trade_dates, trade_details, daily_signals
 
 
+def _current_drawdown_info(nav: pd.Series) -> dict:
+    """返回当前回撤状态：幅度、起始日、区间最大回撤"""
+    cmax = nav.cummax()
+    dd_series = nav / cmax - 1
+    current_dd = dd_series.iloc[-1]
+
+    # Find current drawdown start: last time NAV was at a peak before today
+    peak_idx = (nav == cmax).astype(int)
+    # Work backwards to find the last peak
+    dd_start = nav.index[0]
+    for i in range(len(nav) - 1, -1, -1):
+        if nav.iloc[i] == cmax.iloc[i]:
+            dd_start = nav.index[i]
+            break
+
+    # If currently at peak, no active drawdown
+    if current_dd >= 0:
+        return {"当前回撤": 0.0, "最近回撤开始": None, "最近区间最大回撤": 0.0,
+                "最近回撤结束": None, "最近回撤天数": 0}
+
+    # Max drawdown in current drawdown period
+    in_dd = dd_series[dd_start:]
+    max_dd_in_range = in_dd.min()
+    trough_idx = in_dd.idxmin()
+    days_in_dd = (nav.index[-1] - dd_start).days
+
+    return {"当前回撤": current_dd, "最近回撤开始": dd_start,
+            "最近区间最大回撤": max_dd_in_range, "最近回撤低点": trough_idx,
+            "最近回撤天数": days_in_dd}
+
+
+def _add_position_advice(dd_info: dict) -> str:
+    """单向阶梯加仓：只显示当前所处档位
+    基于2018-2026回撤分析(crash_sigma=2.6)：
+    5~10%噪声(14次中位数31天)不操作，≥10%→20%(12次1.4/年)，≥15%→累计50%(4次0.5/年)，≥20%→累计80%(2次0.2/年)
+    使用「最近区间最大回撤」实现单向：回撤期内只进不退"""
+    cur = dd_info.get("最近区间最大回撤", 0)
+    if cur >= -0.05:
+        return "暂无加仓机会"
+    if cur >= -0.10:
+        return "暂无加仓机会"
+    if cur >= -0.15:
+        return "加仓至20%仓位"
+    if cur >= -0.20:
+        return "加仓至50%仓位"
+    return "加仓至80%仓位，留20%现金"
+
+
 def metrics(nav: pd.Series, ret: pd.Series) -> dict:
     r = ret.dropna()
     if len(r) < 1:
@@ -215,9 +263,14 @@ def metrics(nav: pd.Series, ret: pd.Series) -> dict:
     max_loss_dt = nav.idxmin()
     underwater_days = int((nav < 1).sum())
     holding_days = len(r)
+
+    # Recent drawdown info
+    dd_info = _current_drawdown_info(nav)
+
     return {"累计收益": total, "年化收益": ann, "年化波动": vol, "夏普比率": sharpe,
             "最大回撤": dd, "卡尔玛比率": calmar, "最大亏损": max_loss,
-            "最大亏损日期": max_loss_dt, "水下天数": underwater_days, "持有天数": holding_days}
+            "最大亏损日期": max_loss_dt, "水下天数": underwater_days, "持有天数": holding_days,
+            **dd_info}
 
 
 def position_dist(prices: pd.DataFrame, start_date: str, end_date: str, mode: str,
@@ -253,7 +306,8 @@ def position_dist(prices: pd.DataFrame, start_date: str, end_date: str, mode: st
         if signal != holding:
             if i - last_trade_i >= min_hold:
                 if start_ts <= dt <= end_ts:
-                    buys[signal] += 1
+                    if signal is not None:
+                        buys[signal] = buys.get(signal, 0) + 1
                     if holding is not None and holding in log_ret:
                         log_ret[holding] += math.log(1 - (commission + stamp_duty))
                     if signal is not None:
@@ -666,6 +720,23 @@ def main() -> None:
             wr = trade_win_rate(ret, trade_details, prices_full)
             print(f"{'交易次数':<14} {trades:>10}")
             print(f"{'胜率':<14} {wr:>9.1%}")
+            # ── 当前回撤状态 ──
+            cur_dd = m.get("当前回撤", 0)
+            dd_start = m.get("最近回撤开始", None)
+            dd_max = m.get("最近区间最大回撤", 0)
+            dd_trough = m.get("最近回撤低点", None)
+            dd_days = m.get("最近回撤天数", 0)
+            if dd_start is not None:
+                start_str = str(dd_start)[:10]
+                trough_str = str(dd_trough)[:10] if dd_trough is not None else ""
+                print(f"\n--- 当前回撤状态 ---")
+                print(f"{'当前回撤':<14} {cur_dd:>9.1%}")
+                print(f"{'回撤起始日':<14} {start_str:>10}")
+                print(f"{'回撤低点日':<14} {trough_str:>10}")
+                print(f"{'区间最大回撤':<14} {dd_max:>9.1%}")
+                print(f"{'回撤已持续':<14} {dd_days:>10}天")
+                print(f"\n--- 加仓建议 ---")
+                print(_add_position_advice(m))
 
             pd_result = (position_dist_bt(prices_full, args.start, args.end, mode, args.ma, args.roc, strategy=args.strategy)
                          if args.backtrader else

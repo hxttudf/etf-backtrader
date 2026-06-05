@@ -391,12 +391,53 @@ def calc_metrics(nav, ret):
         longest_loss_start = cur_start
         longest_loss_end = nav.index[-1]
     loss_range = f"{longest_loss_start.strftime('%Y-%m-%d')} ~ {longest_loss_end.strftime('%Y-%m-%d')}" if longest_loss_start else "N/A"
+
+    # ── 当前回撤状态 ──
+    cmax = nav.cummax()
+    current_dd = dd_series.iloc[-1]
+    dd_start = nav.index[0]
+    for i in range(len(nav) - 1, -1, -1):
+        if nav.iloc[i] == cmax.iloc[i]:
+            dd_start = nav.index[i]
+            break
+    if current_dd >= 0:
+        cur_dd_info = {"当前回撤": 0.0, "最近回撤开始": None, "最近区间最大回撤": 0.0,
+                       "最近回撤低点": None, "最近回撤天数": 0}
+    else:
+        in_dd = dd_series[dd_start:]
+        max_dd_in_range = in_dd.min()
+        trough_idx = in_dd.idxmin()
+        days_in_dd = (nav.index[-1] - dd_start).days
+        cur_dd_info = {"当前回撤": current_dd, "最近回撤开始": dd_start,
+                       "最近区间最大回撤": max_dd_in_range, "最近回撤低点": trough_idx,
+                       "最近回撤天数": days_in_dd}
+
+    # ── 加仓建议（单向阶梯：只显示当前所处档位）──
+    # 基于2018-2026历史回撤分析(crash_sigma=2.6, 5%整档位)：
+    # 5~10%共14次(中位数31天修复，噪声) → 不操作
+    # ≥10%共12次(1.4次/年，中位数66天修复) → 触发加仓
+    # ≥15%共4次(0.5次/年) → 追加
+    # ≥20%共2次(0.2次/年，中位数130天修复) → 重仓
+    # 用区间最大回撤（该回撤期内的最深值），实现单向阶梯
+    cur = cur_dd_info.get("最近区间最大回撤", 0)
+    if cur >= -0.05:
+        advice = "暂无加仓机会"
+    elif cur >= -0.10:
+        advice = "暂无加仓机会"
+    elif cur >= -0.15:
+        advice = "加仓至20%仓位"
+    elif cur >= -0.20:
+        advice = "加仓至50%仓位"
+    else:
+        advice = "加仓至80%仓位，留20%现金"
+
     return {"累计收益": total, "年化收益": ann, "年化波动": vol, "夏普比率": sharpe,
             "最大回撤": dd, "最大回撤日期": max_dd_dt,
             "最大回撤区间": max_dd_range_dd, "最长回撤持续": longest_dd_days, "最长回撤区间": dd_range,
             "卡尔玛比率": calmar, "最大亏损": max_loss,
             "最大亏损日期": max_loss_dt, "水下天数": underwater_days, "持有天数": holding_days,
-            "最长亏损持续": longest_loss_days, "最长亏损区间": loss_range}
+            "最长亏损持续": longest_loss_days, "最长亏损区间": loss_range,
+            **cur_dd_info, "加仓建议": advice}
 
 
 def _nav_one_backtest(prices, daily_ret, ma60, roc20, etf_names, start_date, end_date, mode, min_hold, ma_days,
@@ -2492,6 +2533,43 @@ if sig_btn:
             df["收盘价"] = df["收盘价"].apply(lambda v: f"{v:.3f}" if pd.notna(v) else "—")
         st.dataframe(df, hide_index=True, width='content')
 
+        # ── 当前回撤 & 加仓建议（从最早开始算到最新数据）──
+        with st.spinner("计算当前回撤状态..."):
+            try:
+                _sig_dd_start = max(pd.Timestamp("2018-01-01"), prices.index[0])
+                _sig_dd_end = prices.index[-1]
+                if _sig_dd_end > _sig_dd_start:
+                    dd_nav, *_ = run_backtest(prices, "daily", str(_sig_dd_start)[:10], str(_sig_dd_end)[:10],
+                                              ma_days, roc_days, commission=0.0001, stamp_duty=0.0,
+                                              crash_sigma=crash_sigma if use_crash_filter else None,
+                                              crash_std_window=crash_window if use_crash_filter else 20)
+                    cmax = dd_nav.cummax()
+                    dd_s = dd_nav / cmax - 1
+                    cur_dd_v = dd_s.iloc[-1]
+                    _peak_i = dd_nav.index[0]
+                    for i in range(len(dd_nav) - 1, -1, -1):
+                        if dd_nav.iloc[i] == cmax.iloc[i]:
+                            _peak_i = dd_nav.index[i]
+                            break
+                    dd_max_in = dd_s[_peak_i:].min() if cur_dd_v < 0 else 0.0
+                    cur_dd_pct = cur_dd_v if cur_dd_v < 0 else 0.0
+
+                    if dd_max_in >= -0.05:
+                        advice_str = "暂无加仓机会"
+                    elif dd_max_in >= -0.10:
+                        advice_str = "暂无加仓机会"
+                    elif dd_max_in >= -0.15:
+                        advice_str = "加仓至20%仓位"
+                    elif dd_max_in >= -0.20:
+                        advice_str = "加仓至50%仓位"
+                    else:
+                        advice_str = "加仓至80%仓位，留20%现金"
+
+                    st.markdown(
+                        f"**加仓建议** `{advice_str}`  · **当前回撤** `{cur_dd_pct:.2%}`  · **区间最大回撤** `{dd_max_in:.2%}`")
+            except Exception as e:
+                pass  # silently skip if backtest fails
+
 # ── Main area ────────────────────────────────────────────
 if run_btn:
     etfs = cfg["groups"][sel_group]
@@ -2601,11 +2679,11 @@ if run_btn:
                         cols[ci].metric(key, f"{buys}", help=metric_help.get(key))
                     elif key == "卖出次数":
                         cols[ci].metric(key, f"{sells}", help=metric_help.get(key))
-                    elif key in ("持有天数", "水下天数", "最长亏损持续", "最长回撤持续"):
+                    elif key in ("持有天数", "水下天数", "最长亏损持续", "最长回撤持续", "最近回撤天数"):
                         cols[ci].metric(key, f"{int(mm.get(key, 0))}", help=metric_help.get(key))
                     elif key in ("最长亏损区间", "最长回撤区间", "最大回撤区间"):
                         cols[ci].metric(key, mm.get(key, "N/A"), help=metric_help.get(key))
-                    elif key in ("最大亏损日期", "最大回撤日期"):
+                    elif key in ("最大亏损日期", "最大回撤日期", "最近回撤开始", "最近回撤低点"):
                         dt_val = mm.get(key)
                         dt_valid = dt_val if dt_val is not None and not pd.isna(dt_val) else None
                         cols[ci].metric(key, dt_valid.strftime("%Y-%m-%d") if dt_valid else "N/A", help=metric_help.get(key))
@@ -2613,6 +2691,12 @@ if run_btn:
                         cols[ci].metric(key, f"{wr:.0%}", help=metric_help.get(key))
                     elif key in ("夏普比率", "卡尔玛比率"):
                         cols[ci].metric(key, f"{mm.get(key, 0):.2f}", help=metric_help.get(key))
+                    elif key == "加仓建议":
+                        advice = mm.get(key, "暂无")
+                        cols[ci].metric(key, advice, help=metric_help.get(key))
+                    elif key in ("当前回撤", "最近区间最大回撤"):
+                        val = mm.get(key, 0)
+                        cols[ci].metric(key, f"{val:.2%}", help=metric_help.get(key))
                     else:
                         cols[ci].metric(key, f"{mm.get(key, 0):.3%}", help=metric_help.get(key))
             # pad empty columns so layout doesn't shift
@@ -2638,11 +2722,19 @@ if run_btn:
             "买入次数": "策略发出的买入信号次数（买入某ETF）",
             "卖出次数": "策略发出的卖出信号次数（卖出某ETF）",
             "胜率": "获胜交易数÷总交易数，每笔买入→卖出记一次",
+            "当前回撤": "当前净值距离最近一次历史峰值的跌幅",
+            "最近回撤开始": "当前回撤的起始日期（上次净值创新高的日期）",
+            "最近回撤低点": "当前回撤过程中净值最低的日期",
+            "最近区间最大回撤": "当前回撤区间内净值从峰值到谷底的最大跌幅",
+            "最近回撤天数": "当前回撤已持续的自然日天数",
+            "加仓建议": "基于2018-2026回撤分析(crash_sigma=2.6)：5~10%噪声(14次中位数31天)不操作，≥-15%→20%仓位，≥-20%→50%仓位，<-20%→80%仓位，留20%现金。单向阶梯：回撤期内只进不退",
         }
         metric_keys = ["累计收益", "年化收益", "夏普比率", "最大回撤", "最大回撤日期",
                        "最大回撤区间", "最长回撤持续", "最长回撤区间",
                        "最大亏损", "最大亏损日期", "水下天数", "最长亏损持续", "最长亏损区间",
-                       "持有天数", "卡尔玛比率", "买入次数", "卖出次数", "胜率"]
+                       "持有天数", "卡尔玛比率", "买入次数", "卖出次数", "胜率",
+                       "当前回撤", "最近回撤开始", "最近回撤低点", "最近区间最大回撤", "最近回撤天数",
+                       "加仓建议"]
         render_metrics(mm, trades, wr, buys, sells, metric_keys)
         pos_fn = position_dist_bt if use_backtrader else position_dist
         pos_args = (prices_full, actual_start_str, end_str, m, ma_days, roc_days)
