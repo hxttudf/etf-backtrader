@@ -48,10 +48,10 @@ class StampDutyCommission(bt.CommInfoBase):
     )
 
     def _getcommission(self, size, price, pseudoexec):
-        comm = abs(size) * price * self.p.commission
+        rate = self.p.commission
         if size < 0:
-            comm += abs(size) * price * self.p.stamp_duty
-        return comm
+            rate += self.p.stamp_duty
+        return abs(size) * price * rate
 
 
 # ═══════════════════════════════════════════════════════════
@@ -113,16 +113,35 @@ def _make_data_feed(prices, name, open_prices=None, ma_df=None, roc_df=None):
 # ═══════════════════════════════════════════════════════════
 
 def _execute_trade(strat, dt, new_holding):
-    """Execute a position change. With coc/coo, orders fill at same bar (close or open)."""
+    """Execute a position change. With coc/coo, orders fill at same bar (close or open).
+
+    Target % for buy accounts for BOTH commission and set_slippage_perc price impact,
+    ensuring available cash (from sell at slipped price minus commission) is sufficient
+    to fill the buy order (at slipped price plus commission).
+
+    QMT 真实场景: 先卖→得款(滑点价-佣金)→再买(滑点价+佣金)
+    """
+    comminfo = strat.broker.getcommissioninfo(strat.datas[0])
+    sell_comm = comminfo.p.commission + comminfo.p.stamp_duty
+    buy_comm = comminfo.p.commission
+    slip_pct = strat.broker.p.slip_perc  # from set_slippage_perc
+
     if strat._holding is not None:
         for d in strat.datas:
             if d._name == strat._holding:
                 strat.order_target_percent(d, target=0.0)
                 break
     if new_holding is not None:
+        # Cash from sell:  PV × (1 - slip_pct) × (1 - sell_comm)
+        # Cost of buy:     PV × target × (1 + slip_pct) × (1 + buy_comm)
+        # For cash = cost: target = (1 - slip_pct)(1 - sell_comm) / (1 + slip_pct)(1 + buy_comm)
+        if strat._holding is not None:
+            target = (1 - slip_pct) * (1 - sell_comm) / ((1 + slip_pct) * (1 + buy_comm))
+        else:
+            target = 1.0 / ((1 + slip_pct) * (1 + buy_comm))
         for d in strat.datas:
             if d._name == new_holding:
-                strat.order_target_percent(d, target=0.999)
+                strat.order_target_percent(d, target=target)
                 break
     strat._trade_log.append((dt, strat._holding, new_holding))
     strat._holding = new_holding
@@ -1126,7 +1145,7 @@ STRATEGIES = {
 
 def _setup_cerebro(prices, mode, ma_days, roc_days, min_hold=0, strategy='momentum',
                    open_prices=None, exec_mode='moc', start_date=None, end_date=None,
-                   commission=0.0001, stamp_duty=0.0005):
+                   commission=0.0001, stamp_duty=0.0005, slippage=0.0):
     """创建并配置 Cerebro 实例
 
     exec_mode: 'moc' (broker.set_coc=True) 或 'moo' (cheat_on_open + broker.set_coo)
@@ -1140,8 +1159,8 @@ def _setup_cerebro(prices, mode, ma_days, roc_days, min_hold=0, strategy='moment
 
     cerebro.broker.setcash(1_000_000.0)
     cerebro.broker.addcommissioninfo(StampDutyCommission(commission=commission, stamp_duty=stamp_duty))
-
-
+    if slippage > 0:
+        cerebro.broker.set_slippage_perc(slippage)
 
     # Pre-compute MA/ROC with same function as manual engine
     ma_df, roc_df, _ = calc_indicators(prices, ma_days, roc_days)
@@ -1208,7 +1227,7 @@ def _convert_output(strat, prices, start_date, end_date, etf_names):
 
 def run_backtest_bt(prices, mode, start_date, end_date, ma_days=60, roc_days=20, min_hold=0,
                     strategy='moc', open_prices=None, exec_mode='moc', delay=0,
-                    commission=0.0001, stamp_duty=0.0005,
+                    commission=0.0001, stamp_duty=0.0005, slippage=0.0,
                     crash_sigma=None, crash_std_window=20):
     """回测接口。Backtrader 引擎 — 信号和收益与原手动引擎 100% 一致。
 
@@ -1241,7 +1260,7 @@ def run_backtest_bt(prices, mode, start_date, end_date, ma_days=60, roc_days=20,
         if _fn:
             result = _fn(prices, mode, start_date, end_date, ma_days, roc_days, min_hold,
                          open_prices=open_prices, delay=delay,
-                         commission=commission, stamp_duty=stamp_duty,
+                         commission=commission, stamp_duty=stamp_duty, slippage=slippage,
                          crash_sigma=crash_sigma, crash_std_window=crash_std_window)
             nav, bench_nav, ret, bench_ret, trades, trade_dates, trade_details, daily_signals = result
             # Build holding_map and NAV from manual engine for position_dist_bt
@@ -1256,7 +1275,7 @@ def run_backtest_bt(prices, mode, start_date, end_date, ma_days=60, roc_days=20,
         cerebro = _setup_cerebro(prices, mode, ma_days, roc_days, min_hold, strategy,
                                  open_prices=open_prices, exec_mode=exec_mode,
                                  start_date=start_date, end_date=end_date,
-                                 commission=commission, stamp_duty=stamp_duty)
+                                 commission=commission, stamp_duty=stamp_duty, slippage=slippage)
         results = cerebro.run()
         _strat = results[0]
         return _convert_output(_strat, prices_bt, start_date, end_date, etf_names)
@@ -1266,6 +1285,8 @@ def run_backtest_bt(prices, mode, start_date, end_date, ma_days=60, roc_days=20,
     cerebro.broker.set_coc(True)
     cerebro.broker.setcash(1_000_000.0)
     cerebro.broker.addcommissioninfo(StampDutyCommission(commission=commission, stamp_duty=stamp_duty))
+    if slippage > 0:
+        cerebro.broker.set_slippage_perc(slippage)
 
     for name in etf_names:
         data = _make_data_feed(prices_bt, name, ma_df=ma_bt, roc_df=roc_bt,
@@ -1293,8 +1314,8 @@ def run_backtest_bt(prices, mode, start_date, end_date, ma_days=60, roc_days=20,
 
 def position_dist_bt(prices, start_date, end_date, mode, ma_days=60, roc_days=25, min_hold=0,
                      strategy='moc', open_prices=None, exec_mode='moc',
-                     strat=None, strat_nav=None, holding_map=None, trade_log=None,
-                     commission=0.0001, stamp_duty=0.0005):
+                      strat=None, strat_nav=None, holding_map=None, trade_log=None,
+                     commission=0.0001, stamp_duty=0.0005, slippage=0.0):
     """与原 position_dist() 签名和返回值完全一致
 
     strat: Backtrader策略对象(MOC)。strat_nav/holding_map/trade_log: 手动引擎数据(MOO)。
@@ -1321,7 +1342,8 @@ def position_dist_bt(prices, start_date, end_date, mode, ma_days=60, roc_days=25
         # Fallback: run internal Backtrader
         cerebro = _setup_cerebro(prices, mode, ma_days, roc_days, min_hold, strategy,
                                  start_date=start_date, end_date=end_date,
-                                 open_prices=open_prices, exec_mode=exec_mode)
+                                 open_prices=open_prices, exec_mode=exec_mode,
+                                 slippage=slippage)
         results = cerebro.run()
         _strat = results[0]
         value_map = {dt: v for dt, v in _strat._daily_value}
@@ -1334,7 +1356,7 @@ def position_dist_bt(prices, start_date, end_date, mode, ma_days=60, roc_days=25
         if len(strat_nav) > 0:
             strat_nav = strat_nav / strat_nav.iloc[0]
 
-    COMMISSION_RATE = commission + stamp_duty
+    COMMISSION_RATE = commission + stamp_duty + slippage
 
     days = {n: 0 for n in etf_names}
     days["CASH"] = 0

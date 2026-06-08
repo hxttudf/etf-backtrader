@@ -127,7 +127,7 @@ def _safe_loc(df, col, dt, fallback_prices, i):
 def run_backtest(prices, mode, start_date, end_date, ma_days, roc_days, min_hold=0,
                  open_prices=None, midday_prices=None, afternoon_open_prices=None,
                  delay=0, use_open_signal=False,
-                 commission=0.0001, stamp_duty=0.0005,
+                 commission=0.0001, stamp_duty=0.0005, slippage=0.0,
                  crash_sigma=None, crash_std_window=20):
     """Inline backtest so the app stays self-contained.
 
@@ -237,9 +237,9 @@ def run_backtest(prices, mode, start_date, end_date, ma_days, roc_days, min_hold
                             mid_px = midday_prices[holding].loc[mk]
                             if not pd.isna(prev_c) and not pd.isna(mid_px) and prev_c > 0:
                                 strat_ret.iloc[i] = mid_px / prev_c - 1
-                            strat_ret.iloc[i] -= commission + stamp_duty
+                            strat_ret.iloc[i] -= commission + stamp_duty + slippage
                         if effective_signal is not None:
-                            strat_ret.iloc[i] -= commission
+                            strat_ret.iloc[i] -= commission + slippage
                         new_h = effective_signal
                         if new_h is not None:
                             aft_o = afternoon_open_prices[new_h].loc[ak]
@@ -250,15 +250,15 @@ def run_backtest(prices, mode, start_date, end_date, ma_days, roc_days, min_hold
                     else:
                         if holding is not None:
                             r = returns[holding].iloc[i]
-                            strat_ret.iloc[i] = (r if not pd.isna(r) else 0.0) - commission - stamp_duty
+                            strat_ret.iloc[i] = (r if not pd.isna(r) else 0.0) - commission - stamp_duty - slippage
                         if effective_signal is not None:
-                            strat_ret.iloc[i] -= commission
+                            strat_ret.iloc[i] -= commission + slippage
                 else:
                     if holding is not None:
                         r = returns[holding].iloc[i]
-                        strat_ret.iloc[i] = (r if not pd.isna(r) else 0.0) - commission - stamp_duty
+                        strat_ret.iloc[i] = (r if not pd.isna(r) else 0.0) - commission - stamp_duty - slippage
                     if effective_signal is not None:
-                        strat_ret.iloc[i] -= commission
+                        strat_ret.iloc[i] -= commission + slippage
             elif _use_open and i > 0:
                 # T+1 open execution
                 # Use .loc[dt] (not .iloc[i]) because open_prices may have different row count
@@ -267,9 +267,9 @@ def run_backtest(prices, mode, start_date, end_date, ma_days, roc_days, min_hold
                     today_open_old = _safe_loc(open_prices, holding, dt, prices, i)
                     if not pd.isna(prev_c) and not pd.isna(today_open_old) and prev_c > 0:
                         strat_ret.iloc[i] = today_open_old / prev_c - 1
-                    strat_ret.iloc[i] -= commission + stamp_duty
+                    strat_ret.iloc[i] -= commission + stamp_duty + slippage
                 if effective_signal is not None:
-                    strat_ret.iloc[i] -= commission
+                    strat_ret.iloc[i] -= commission + slippage
                 new_h = effective_signal
                 if new_h is not None:
                     o = _safe_loc(open_prices, new_h, dt, prices, i)
@@ -280,9 +280,9 @@ def run_backtest(prices, mode, start_date, end_date, ma_days, roc_days, min_hold
                 # Close-to-close (signal T日close → execute T日close, same day)
                 if holding is not None:
                     r = returns[holding].iloc[i]
-                    strat_ret.iloc[i] = (r if not pd.isna(r) else 0.0) - commission - stamp_duty
+                    strat_ret.iloc[i] = (r if not pd.isna(r) else 0.0) - commission - stamp_duty - slippage
                 if effective_signal is not None:
-                    strat_ret.iloc[i] -= commission
+                    strat_ret.iloc[i] -= commission + slippage
 
             trades += 1
             trade_dates.append(dt)
@@ -441,7 +441,7 @@ def calc_metrics(nav, ret):
 
 
 def _nav_one_backtest(prices, daily_ret, ma60, roc20, etf_names, start_date, end_date, mode, min_hold, ma_days,
-                      commission=0.0001, stamp_duty=0.0005):
+                      commission=0.0001, stamp_duty=0.0005, slippage=0.0):
     """Run one backtest pass, return final NAV. etf_names = active ETF pool.
     Uses additive commission (matching run_backtest) for exact comparability."""
     is_friday = prices.index.dayofweek == 4
@@ -468,9 +468,9 @@ def _nav_one_backtest(prices, daily_ret, ma60, roc20, etf_names, start_date, end
                 last_trade_idx = i
             if new_holding != holding:
                 if holding is not None:
-                    strat_ret.iloc[i] -= commission + stamp_duty
+                    strat_ret.iloc[i] -= commission + stamp_duty + slippage
                 if new_holding is not None:
-                    strat_ret.iloc[i] -= commission
+                    strat_ret.iloc[i] -= commission + slippage
             holding = new_holding
     trim = (prices.index >= pd.Timestamp(start_date)) & (prices.index <= pd.Timestamp(end_date))
     r = strat_ret[trim].dropna()
@@ -478,7 +478,7 @@ def _nav_one_backtest(prices, daily_ret, ma60, roc20, etf_names, start_date, end
 
 
 def position_dist(prices, start_date, end_date, mode, ma_days, roc_days, min_hold=0,
-                  commission=0.0001, stamp_duty=0.0005):
+                  commission=0.0001, stamp_duty=0.0005, slippage=0.0):
     """返回 (持有天数dict, 买入次数dict, 收益占比dict, 持有期累计收益dict, 上涨天数占比dict)
     收益占比 = 各ETF持有期间的对数收益 / 总对数收益，加总=100%，正=赚钱负=亏钱
     持有期累计收益 = 持有该ETF期间的累计收益率
@@ -531,7 +531,7 @@ def position_dist(prices, start_date, end_date, mode, ma_days, roc_days, min_hol
                 last_trade_idx = i
                 # 佣金从当天持仓的 log return 扣除
                 if in_range and holding is not None:
-                    log_ret[holding] += math.log(1 - (commission + stamp_duty))
+                    log_ret[holding] += math.log(1 - (commission + stamp_duty + slippage))
             holding = new_holding
 
     total_log = sum(log_ret.values())
@@ -594,8 +594,8 @@ def trade_win_rate(ret, trade_details, prices):
 
 def grid_search(prices, modes, start, end, ma_values, roc_values, progress_bar,
                 open_prices=None, midday_prices=None, afternoon_open_prices=None,
-                delay=0, use_open_signal=False,
-                crash_sigma=None, crash_std_window=20):
+                delay=0, use_open_signal=False, commission=0.0001, stamp_duty=0.0005,
+                slippage=0.0, crash_sigma=None, crash_std_window=20):
     """网格搜索最优MA/ROC，返回所有结果DataFrame"""
     import itertools
 
@@ -610,6 +610,7 @@ def grid_search(prices, modes, start, end, ma_values, roc_values, progress_bar,
                 midday_prices=midday_prices,
                 afternoon_open_prices=afternoon_open_prices,
                 delay=delay, use_open_signal=use_open_signal,
+                commission=commission, stamp_duty=stamp_duty, slippage=slippage,
                 crash_sigma=crash_sigma, crash_std_window=crash_std_window)
             m = calc_metrics(nav, ret)
             wr = trade_win_rate(ret, trade_details, prices)
@@ -2115,6 +2116,11 @@ stamp_duty = st.sidebar.number_input("印花税率（万分之五=0.0005）", 0.
     float(_stamp_val) if _stamp_val not in (None, "") else 0.0005,
     step=0.0001, format="%.4f", key="sb_stamp",
     help="印花税，仅卖出时收取，A股万五=0.0005，ETF通常不收")
+_slippage_val = _qp("slippage", "0.001")
+slippage = st.sidebar.number_input("滑点（千分之一=0.001）", 0.0, 0.01,
+    float(_slippage_val) if _slippage_val not in (None, "") else 0.001,
+    step=0.0001, format="%.4f", key="sb_slippage",
+    help="滑点，买卖双向收取。千分之一=0.001 适合高流动性ETF")
 compare_all = st.sidebar.checkbox("对比所有组合", value=False,
     help="同时回测所有已配置组合，并排对比关键指标")
 
@@ -2154,7 +2160,7 @@ strategy = st.sidebar.selectbox("策略", list(STRATEGIES.keys()),
     help="仅 Backtrader 引擎支持多策略")
 
 # 配置变化时清除缓存，下次需要重新点击回测
-_cfg_sig = (sel_group, str(start_date), str(end_date), mode, exec_timing, use_backtrader, ma_days, roc_days, delay, commission, stamp_duty, use_crash_filter, crash_sigma, crash_window)
+_cfg_sig = (sel_group, str(start_date), str(end_date), mode, exec_timing, use_backtrader, ma_days, roc_days, delay, commission, stamp_duty, slippage, use_crash_filter, crash_sigma, crash_window)
 if st.session_state.get("_cfg_sig") != _cfg_sig:
     st.session_state.pop("_bt_cached", None)
 st.session_state["_cfg_sig"] = _cfg_sig
@@ -2167,7 +2173,7 @@ if st.sidebar.button("💾 保存动量配置", width='stretch',
         "g": sel_group, "start": str(start_date), "end": str(end_date),
         "mode": mode, "src": source, "ma": str(ma_days), "roc": str(roc_days),
         "stg": strategy, "delay": str(delay),
-        "comm": str(commission), "stamp": str(stamp_duty),
+        "comm": str(commission), "stamp": str(stamp_duty), "slippage": str(slippage),
         "crash": str(use_crash_filter), "crash_sigma": str(crash_sigma),
         "crash_win": str(crash_window),
     }
@@ -2540,7 +2546,7 @@ if sig_btn:
                 _sig_dd_end = prices.index[-1]
                 if _sig_dd_end > _sig_dd_start:
                     dd_nav, *_ = run_backtest(prices, "daily", str(_sig_dd_start)[:10], str(_sig_dd_end)[:10],
-                                              ma_days, roc_days, commission=0.0001, stamp_duty=0.0,
+                                              ma_days, roc_days, commission=0.0001, stamp_duty=0.0, slippage=slippage,
                                               crash_sigma=crash_sigma if use_crash_filter else None,
                                               crash_std_window=crash_window if use_crash_filter else 20)
                     cmax = dd_nav.cummax()
@@ -2634,7 +2640,7 @@ if run_btn:
                     run_backtest_bt(prices_full, m, actual_start_str, end_str, ma_days, roc_days,
                                     strategy=bt_mode, open_prices=_exec_open,
                                     exec_mode=bt_mode, delay=delay,
-                                    commission=commission, stamp_duty=stamp_duty,
+                                    commission=commission, stamp_duty=stamp_duty, slippage=slippage,
                                     crash_sigma=_crash_sigma, crash_std_window=_crash_window)
                 bt_strats[m] = bt_strat
                 bt_holdings[m] = bt_hmap
@@ -2647,7 +2653,7 @@ if run_btn:
                                  midday_prices=_midday_prices,
                                  afternoon_open_prices=_afternoon_open_prices,
                                  delay=delay, use_open_signal=_use_open_signal,
-                                 commission=commission, stamp_duty=stamp_duty,
+                                 commission=commission, stamp_duty=stamp_duty, slippage=slippage,
                                  crash_sigma=_crash_sigma, crash_std_window=_crash_window)
             metrics_dict = calc_metrics(nav, ret)
             bench_metrics = calc_metrics(bnav, bret)
@@ -2739,7 +2745,7 @@ if run_btn:
         pos_fn = position_dist_bt if use_backtrader else position_dist
         pos_args = (prices_full, actual_start_str, end_str, m, ma_days, roc_days)
         if use_backtrader:
-            pos_kwargs = dict(strategy=bt_mode, exec_mode=bt_mode, commission=commission, stamp_duty=stamp_duty)
+            pos_kwargs = dict(strategy=bt_mode, exec_mode=bt_mode, commission=commission, stamp_duty=stamp_duty, slippage=slippage)
             pos_kwargs['open_prices'] = _exec_open
             pos_kwargs['min_hold'] = 0
             if bt_strats.get(m) is not None:
@@ -2749,7 +2755,7 @@ if run_btn:
                 pos_kwargs['strat_nav'] = bt_navs[m]
                 pos_kwargs['trade_log'] = bt_tlogs[m]
         else:
-            pos_kwargs = dict(commission=commission, stamp_duty=stamp_duty)
+            pos_kwargs = dict(commission=commission, stamp_duty=stamp_duty, slippage=slippage)
         pos_days, pos_buys, pos_contrib, pos_cum, pos_wr = pos_fn(*pos_args, **pos_kwargs)
         total = sum(pos_days.values())
         if total == 0:
@@ -3058,7 +3064,7 @@ if run_btn:
                         run_backtest_bt(gprices_full, m, gactual_str, end_str, ma_days, roc_days,
                                         strategy=bt_m, open_prices=gopen_full,
                                         exec_mode=bt_m, delay=delay,
-                                        commission=commission, stamp_duty=stamp_duty,
+                                        commission=commission, stamp_duty=stamp_duty, slippage=slippage,
                                         crash_sigma=_crash_sigma, crash_std_window=_crash_window)
                 else:
                     gnav, gbnav, gret, gbret, gtrades, gtd, gtdets, _ = \
@@ -3067,7 +3073,7 @@ if run_btn:
                                      midday_prices=gmidday,
                                      afternoon_open_prices=gaft_open,
                                      delay=delay, use_open_signal=_use_open_signal,
-                                     commission=commission, stamp_duty=stamp_duty,
+                                     commission=commission, stamp_duty=stamp_duty, slippage=slippage,
                                      crash_sigma=_crash_sigma, crash_std_window=_crash_window)
                 gm = calc_metrics(gnav, gret)
                 gwr = trade_win_rate(gret, gtdets, gprices_full)
@@ -3126,6 +3132,7 @@ if run_btn:
                                  midday_prices=_midday_prices,
                                  afternoon_open_prices=_afternoon_open_prices,
                                  delay=delay, use_open_signal=_use_open_signal,
+                                 commission=commission, stamp_duty=stamp_duty, slippage=slippage,
                                  crash_sigma=_crash_sigma, crash_std_window=_crash_window)
             status.update(label=f"完成 {total_combo} 种组合", state="complete")
 
