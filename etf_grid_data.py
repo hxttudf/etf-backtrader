@@ -8,13 +8,14 @@
   - akshare: Sina 日线（最稳定，ETF 和个股均有 OHLC）
 """
 
+import os
 from pathlib import Path
 from datetime import datetime, timedelta
 
 import pandas as pd
 import akshare as ak
 
-CACHE_DIR = Path(__file__).parent
+CACHE_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).parent))
 
 
 def _detect_type(symbol: str) -> str:

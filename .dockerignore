@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OMC
+.omc/
+
+# Build artifacts
+build/
+dist/
+*.spec
+
+# OS
+.DS_Store
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Data (persisted via Docker volume)
+*.csv
+*.parquet
+etf.db
+data/
+
+# Docs
+docs/
+
+# Config backups (JSON files are read-write from volume)
+*.png
+__pycache__/
+.pytest_cache/
+.devcontainer/

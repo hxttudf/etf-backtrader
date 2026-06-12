@@ -493,6 +493,11 @@ def load_config() -> dict:
 
 def save_config(cfg: dict) -> None:
     import json
+    try:
+        from etf_db import ConfigDB
+        ConfigDB.set(ConfigDB.KEY_CHANLUN, cfg)
+    except ImportError:
+        pass
     path = Path(__file__).parent / "etf_chanlun_config.json"
     path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2))
 

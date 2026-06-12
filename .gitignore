@@ -19,3 +19,9 @@ grid_*.csv
 
 # Cache
 cache/
+data/
+*.db
+
+# Backups
+backups/
+*.tar.gz

@@ -49,7 +49,8 @@ try:
 except ImportError:
     _HAS_CHANLUN = False
 import datetime as _dt
-import json
+
+from etf_db import ConfigDB, get_config_path
 
 st.set_page_config(page_title="ETF双动量轮动", layout="wide")
 
@@ -58,6 +59,12 @@ GRID_CONFIG_PATH = Path(__file__).parent / "etf_grid_config.json"
 GRID_SYMBOLS_PATH = Path(__file__).parent / "etf_grid_symbols.json"
 MOMENTUM_CONFIG_PATH = Path(__file__).parent / "etf_momentum_config.json"
 MA_SYMBOLS_PATH = Path(__file__).parent / "etf_ma_symbols.json"
+
+# ── SQLite 数据库 ────────────────────────────────────
+_migrated = ConfigDB.migrate_from_json()
+if _migrated:
+    print(f"[DB] 已迁移 {_migrated} 个 JSON 配置到 SQLite")
+DATA_PATH = get_config_path()
 
 st.markdown("""
 <style>
@@ -844,14 +851,14 @@ if _mode == "网格交易":
     # ═══════════════════════════════════════════════════════
     # 网格交易参数（从本地 JSON 配置文件加载默认值）
     # ═══════════════════════════════════════════════════════
-    _grid_file_cfg = {}
-    if GRID_CONFIG_PATH.exists():
+    _grid_file_cfg = ConfigDB.get(ConfigDB.KEY_GRID_CONFIG) or {}
+    if not _grid_file_cfg and GRID_CONFIG_PATH.exists():
         try:
             _grid_file_cfg = json.loads(GRID_CONFIG_PATH.read_text())
         except Exception:
             _grid_file_cfg = {}
     def _grid_def(k: str, default):
-        """从 JSON 配置文件读取，若无则用默认值"""
+        """从配置文件读取，优先 SQLite，若无则用默认值"""
         if k in _grid_file_cfg:
             return _grid_file_cfg[k]
         return default
@@ -904,6 +911,7 @@ if _mode == "网格交易":
             try:
                 _parsed = json.loads(_new_json)
                 st.session_state.grid_symbols = [(k, v) for k, v in _parsed.items()]
+                ConfigDB.set(ConfigDB.KEY_GRID_SYMBOLS, _parsed)
                 GRID_SYMBOLS_PATH.write_text(_new_json, encoding="utf-8")
                 st.session_state.pop("g_sym_json", None)
                 st.session_state["_grid_msg"] = f"✅ 已保存 {len(st.session_state.grid_symbols)} 个标的"
@@ -1050,7 +1058,7 @@ if _mode == "网格交易":
 
     run_grid_btn = st.sidebar.button("🚀 运行网格回测", type="primary", width='stretch')
     if st.sidebar.button("💾 保存配置", width='stretch',
-                         help="保存当前参数到 etf_grid_config.json，远程部署时也适用"):
+                         help="保存当前参数（SQLite + JSON），远程部署时也适用"):
         config_data = {
             "g_sym": grid_sym_sel, "g_period": grid_period, "g_src": grid_source,
             "g_tt": grid_trigger_type, "g_sell": str(sell_threshold), "g_ps": str(pullback_sell),
@@ -1060,6 +1068,7 @@ if _mode == "网格交易":
             "g_sd": str(grid_start), "g_ed": str(grid_end),
             "g_comm": str(comm), "g_slip": str(slip),
         }
+        ConfigDB.set(ConfigDB.KEY_GRID_CONFIG, config_data)
         GRID_CONFIG_PATH.write_text(json.dumps(config_data, ensure_ascii=False, indent=2))
         st.sidebar.success("✅ 配置已保存")
 
@@ -1443,9 +1452,9 @@ if _mode == "网格交易":
 if _mode == "双动量轮动":
     st.sidebar.header("📊 回测参数")
 
-    # ── Restore from local JSON config ──
-    _momentum_file_cfg = {}
-    if MOMENTUM_CONFIG_PATH.exists():
+    # ── Restore from SQLite / local JSON config ──
+    _momentum_file_cfg = ConfigDB.get(ConfigDB.KEY_MOMENTUM) or {}
+    if not _momentum_file_cfg and MOMENTUM_CONFIG_PATH.exists():
         try: _momentum_file_cfg = json.loads(MOMENTUM_CONFIG_PATH.read_text())
         except Exception: pass
     _qp = lambda k, d: _momentum_file_cfg.get(k, d) if k in _momentum_file_cfg else d
@@ -1972,6 +1981,7 @@ if _mode == "MACD/MA信号":
             try:
                 _parsed = json.loads(_new_json)
                 st.session_state.ma_symbols = [(k, v) for k, v in _parsed.items()]
+                ConfigDB.set(ConfigDB.KEY_MA_SYMBOLS, _parsed)
                 MA_SYMBOLS_PATH.write_text(_new_json, encoding="utf-8")
                 st.session_state.pop("ma_sym_json", None)
                 st.session_state["_ma_msg"] = f"✅ 已保存 {len(st.session_state.ma_symbols)} 个标的"
@@ -2168,7 +2178,7 @@ st.session_state["_cfg_sig"] = _cfg_sig
 # ── Params persisted to JSON via "保存动量配置" button below ──
 
 if st.sidebar.button("💾 保存动量配置", width='stretch',
-                     help="保存当前参数到 etf_momentum_config.json，远程部署适用"):
+                     help="保存当前参数（本地与SQLite同时保存），远程部署适用"):
     config_data = {
         "g": sel_group, "start": str(start_date), "end": str(end_date),
         "mode": mode, "src": source, "ma": str(ma_days), "roc": str(roc_days),
@@ -2177,6 +2187,7 @@ if st.sidebar.button("💾 保存动量配置", width='stretch',
         "crash": str(use_crash_filter), "crash_sigma": str(crash_sigma),
         "crash_win": str(crash_window),
     }
+    ConfigDB.set(ConfigDB.KEY_MOMENTUM, config_data)
     MOMENTUM_CONFIG_PATH.write_text(json.dumps(config_data, ensure_ascii=False, indent=2))
     st.sidebar.success("✅ 动量配置已保存")
 

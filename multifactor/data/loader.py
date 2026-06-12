@@ -28,7 +28,13 @@ if str(_ETF_BT_DIR) not in sys.path:
 class DataLoader:
     def __init__(self, source: str = "tencent", cache_dir: str | None = None):
         self.source = source
-        self.cache_dir = Path(cache_dir) if cache_dir else _ETF_BT_DIR / "cache"
+        data_dir = os.environ.get("DATA_DIR")
+        if cache_dir:
+            self.cache_dir = Path(cache_dir)
+        elif data_dir:
+            self.cache_dir = Path(data_dir) / "cache"
+        else:
+            self.cache_dir = _ETF_BT_DIR / "cache"
         self.cache_dir.mkdir(exist_ok=True)
 
     def _read_cache_direct(self, universe: dict[str, str]) -> pd.DataFrame | None:
