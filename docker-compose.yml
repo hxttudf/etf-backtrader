@@ -7,7 +7,7 @@ services:
     ports:
       - "8501:8501"
     volumes:
-      - etf_data:/data
+      - ./data:/data
     environment:
       - DATA_DIR=/data
       - TZ=Asia/Shanghai
@@ -22,6 +22,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
-
-volumes:
-  etf_data:

@@ -321,9 +321,17 @@ def load_prices(etfs: dict, group_name: str = "default", source: str = "tencent"
         results = {}
         open_results = {}
         failed = []
+
+        cached_latest = cached.index.max() if len(cached) > 0 else None
+        missing_days = (pd.Timestamp.now().normalize() - cached_latest).days if cached_latest else None
+
         for code in codes_to_fetch:
             try:
-                s = fetch_fn(code)
+                if source == "tencent" and cached_latest is not None and code in cached.columns:
+                    fetch_days = max(missing_days + 10, 10) if missing_days else 10
+                    s = fetch_one_tencent(code, days=fetch_days)
+                else:
+                    s = fetch_fn(code)
                 results[code] = s
                 o = get_open_from_result(s)
                 if o is not None:
@@ -344,13 +352,7 @@ def load_prices(etfs: dict, group_name: str = "default", source: str = "tencent"
                 )
         new_data = pd.DataFrame(results).dropna(how='all')
 
-        if is_stale:
-            if len(cached) > 0 and today not in new_data.index and today in cached.index:
-                cached = cached.combine_first(new_data)
-            else:
-                cached = new_data
-        else:
-            cached = cached.combine_first(new_data)
+        cached = cached.combine_first(new_data)
 
         # ── 腾讯 days=0 补今天高精度收盘/开盘 ──
         today_ts = pd.Timestamp.now().normalize()

@@ -21,7 +21,7 @@ from etf_data import DEFAULT_CONFIG, calc_indicators, load_config, load_prices
 
 
 def signal_for_date(prices: pd.DataFrame, target_date: str,
-                    ma_days: int = 60, roc_days: int = 25) -> tuple[str | None, pd.DataFrame, pd.Timestamp]:
+                    ma_days: int = 60,                     roc_days: int = 20) -> tuple[str | None, pd.DataFrame, pd.Timestamp]:
     """计算指定日期的信号，返回 (持仓名称, 明细DataFrame)"""
     ma60, roc20, day_chg = calc_indicators(prices, ma_days, roc_days)
 
@@ -40,7 +40,7 @@ def signal_for_date(prices: pd.DataFrame, target_date: str,
         ma = float(ma60[name].loc[dt]) if not pd.isna(ma60[name].loc[dt]) else np.nan
         roc = float(roc20[name].loc[dt]) if not pd.isna(roc20[name].loc[dt]) else np.nan
         chg = float(day_chg[name].loc[dt]) if not pd.isna(day_chg[name].loc[dt]) else np.nan
-        rows.append({"ETF": name, "收盘价": px, "当日涨幅": chg, "60日均线": ma, "20日涨幅": roc})
+        rows.append({"ETF": name, "收盘价": px, "当日涨幅": chg, "60日均线": ma, f"{roc_days}日涨幅": roc})
 
         if not np.isnan(ma) and px > ma and not np.isnan(roc):
             qualified[name] = roc
@@ -51,7 +51,7 @@ def signal_for_date(prices: pd.DataFrame, target_date: str,
 
 
 def print_signal(prices: pd.DataFrame, group_name: str, target_date: str,
-                 ma_days: int = 60, roc_days: int = 25) -> None:
+                 ma_days: int = 60,                  roc_days: int = 20) -> None:
     best, df, actual_dt = signal_for_date(prices, target_date, ma_days, roc_days)
 
     print(f"\n=== {actual_dt.strftime('%Y-%m-%d')} [{group_name}] ETF双动量信号 ===")
@@ -67,7 +67,7 @@ def print_signal(prices: pd.DataFrame, group_name: str, target_date: str,
         px = row["收盘价"]
         chg = row["当日涨幅"]
         ma = row["60日均线"]
-        roc = row["20日涨幅"]
+        roc = row[f"{roc_days}日涨幅"]
 
         above = "是" if not np.isnan(ma) and px > ma else "否"
         chg_str = f"{chg:>+7.2%}" if not np.isnan(chg) else "    N/A"
@@ -94,7 +94,7 @@ def main() -> None:
     parser.add_argument("--all", action="store_true", help="运行所有组合")
     parser.add_argument("--date", default=datetime.today().strftime("%Y-%m-%d"), help="日期 YYYY-MM-DD")
     parser.add_argument("--ma", type=int, default=60, help="均线天数 (默认60)")
-    parser.add_argument("--roc", type=int, default=25, help="动量天数 (默认25)")
+    parser.add_argument("--roc", type=int, default=20, help="动量天数 (默认20)")
     parser.add_argument("--config", default=None, help="配置文件路径")
     parser.add_argument("--source", default="tencent", choices=["tencent", "akshare"], help="数据源 (默认tencent)")
     args = parser.parse_args()
