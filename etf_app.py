@@ -2426,6 +2426,24 @@ def _strategy_signal_for_date(prices, target_date, strategy, ma_days=60, roc_day
             if is_valid and not pd.isna(ma) and px > ma and not pd.isna(roc):
                 candidates[name] = roc
 
+        # 距MA55: 从昨收算起需涨多少
+        if prev_dt is not None and prev_dt in prices.index and not pd.isna(px):
+            try:
+                p_ffill = prices[name].ffill()
+                ma_v = float(p_ffill.rolling(ma_days).mean().loc[dt])
+                if not pd.isna(ma_v):
+                    prev_px = prices[name].loc[prev_dt]
+                    if not pd.isna(prev_px) and prev_px > 0:
+                        row["距MA55"] = f"已超+{(px/ma_v-1)*100:.1f}%" if px > ma_v else f"需涨{(ma_v - prev_px)/prev_px*100:.1f}%"
+                    else:
+                        row["距MA55"] = "—"
+                else:
+                    row["距MA55"] = "—"
+            except:
+                row["距MA55"] = "—"
+        else:
+            row["距MA55"] = "—"
+
         rows.append(row)
 
     df = pd.DataFrame(rows)
@@ -2437,13 +2455,15 @@ def _strategy_signal_for_date(prices, target_date, strategy, ma_days=60, roc_day
                               and r["收盘价"] > r[ma_col]) else "✗", axis=1)
     else:
         df["MA通过"] = "—"
-    # Insert 暴跌排除 column right after MA通过
+    # Insert 暴跌排除 and 距MA55 after MA通过
     cols = list(df.columns)
-    if "暴跌排除" in cols:
-        mai = cols.index("MA通过")
-        cols.remove("暴跌排除")
-        cols.insert(mai + 1, "暴跌排除")
-        df = df[cols]
+    insert_pos = cols.index("MA通过") + 1 if "MA通过" in cols else len(cols)
+    for col_name in ["暴跌排除", "距MA55"]:
+        if col_name in cols:
+            cols.remove(col_name)
+            cols.insert(insert_pos, col_name)
+            insert_pos += 1
+    df = df[cols]
     df["暴跌排除"] = df["暴跌排除"].apply(lambda v: v if v else "—")
 
     rank_cfg = {
@@ -2953,7 +2973,25 @@ if run_btn:
             best_label = f"{best_today} ({etf_codes.get(best_today, '')})" if best_today else "CASH"
             suggest_changed = (best_today != holding)
 
-            row = {"日期": dk, "持仓": hlabel,
+            # 距MA55（从昨收算起需要涨多少才能突破）
+            ma55_need = "—"
+            if best_today and best_today in etfs:
+                code = etfs[best_today]
+                px_val = prices_full[best_today].get(td, np.nan) if td in prices_full.index else np.nan
+                if pd.notna(px_val):
+                    p_ffill = prices_full[best_today].ffill()
+                    ma_val = p_ffill.rolling(ma_days).mean().get(td, np.nan)
+                    if pd.notna(ma_val):
+                        if px_val <= ma_val:
+                            prev_idx = prices_full.index[prices_full.index < td]
+                            if len(prev_idx) > 0:
+                                px_prev = prices_full[best_today].loc[prev_idx[-1]]
+                                need_pct = (ma_val - px_prev) / px_prev * 100
+                                ma55_need = f"需涨{need_pct:.1f}%"
+                        else:
+                            ma55_need = f"已超+{(px_val/ma_val-1)*100:.1f}%"
+
+            row = {"日期": dk, "持仓": hlabel, "距MA55": ma55_need,
                    "今日信号": f"→ {best_label}" if suggest_changed else best_label,
                    "调仓": "🔄" if is_trade else "",
                    "买入价格": buy_px_str,
@@ -3022,6 +3060,11 @@ if run_btn:
                     return 'background-color: #f8d7da; color: #721c24'  # red
                 return ''
             styled = df_sig.style.map(_highlight_prices)
+            # Blue font for 距MA55 when above MA
+            if "距MA55" in df_sig.columns:
+                styled = styled.map(lambda v: 'color: #0066cc; font-weight: bold' 
+                                   if isinstance(v, str) and v.startswith("已超") else '',
+                                   subset=["距MA55"])
             st.dataframe(styled, height=400, hide_index=True, width='stretch')
 
     # ── 5. 全部组合对比 ──
