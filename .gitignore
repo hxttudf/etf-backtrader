@@ -26,3 +26,4 @@ data/
 backups/
 *.tar.gz
 .venv/
+*.csv
